@@ -146,19 +146,19 @@
 
   <!-- Mobile Bottom Navigation Bar -->
   <nav class="mobile-nav">
-    <div class="nav-item active" id="mobNavHome">
+    <div class="nav-item active" id="mobNavHome" onclick="window.scrollTo({ top: 0, behavior: 'smooth' })">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <span>Home</span>
     </div>
-    <div class="nav-item" id="mobNavAdd">
+    <div class="nav-item" id="mobNavAdd" onclick="openVehicleModal()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
       <span>Add New</span>
     </div>
-    <div class="nav-item" id="mobNavNotif">
+    <div class="nav-item" id="mobNavNotif" onclick="openNotifModal()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
       <span>Alerts</span>
     </div>
-    <div class="nav-item" id="mobNavCalendar">
+    <div class="nav-item" id="mobNavCalendar" onclick="openCalendarModal()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
       <span>Calendar</span>
     </div>
@@ -171,7 +171,7 @@
     <div class="modal-box">
       <div class="modal-header">
         <h3 class="modal-title" id="vehicleModalTitle">Add Vehicle Record</h3>
-        <button class="close-btn" id="closeVehicleModalBtn">&times;</button>
+        <button class="close-btn" id="closeVehicleModalBtn" onclick="closeVehicleModal()">&times;</button>
       </div>
       <div class="modal-body">
         <form id="vehicleForm">
@@ -257,7 +257,7 @@
           </div>
 
           <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
-            <button type="button" class="secondary-btn" id="cancelVehicleModalBtn">Cancel</button>
+            <button type="button" class="secondary-btn" id="cancelVehicleModalBtn" onclick="closeVehicleModal()">Cancel</button>
             <button type="submit" class="primary-btn" id="saveVehicleBtn">Save Record</button>
           </div>
         </form>
@@ -270,7 +270,7 @@
     <div class="modal-box" style="max-width: 540px;">
       <div class="modal-header">
         <h3 class="modal-title">Live Document Scanner</h3>
-        <button class="close-btn" id="closeCameraModalBtn">&times;</button>
+        <button class="close-btn" id="closeCameraModalBtn" onclick="closeCameraModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div class="camera-view-container">
@@ -304,7 +304,7 @@
     <div class="modal-box" style="max-width: 600px;">
       <div class="modal-header">
         <h3 class="modal-title" id="docManagerTitle">Vehicle Documents</h3>
-        <button class="close-btn" id="closeDocManagerBtn">&times;</button>
+        <button class="close-btn" id="closeDocManagerBtn" onclick="closeDocManagerModal()">&times;</button>
       </div>
       <div class="modal-body">
         
@@ -349,7 +349,7 @@
     <div class="modal-box" style="max-width: 500px;">
       <div class="modal-header">
         <h3 class="modal-title">Expiry Notifications</h3>
-        <button class="close-btn" id="closeNotifModalBtn">&times;</button>
+        <button class="close-btn" id="closeNotifModalBtn" onclick="closeNotifModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div id="notifListContainer" style="display: flex; flex-direction: column; gap: 0.75rem; max-height: 60vh; overflow-y: auto;">
@@ -364,7 +364,7 @@
     <div class="modal-box" style="max-width: 800px; background: rgba(0,0,0,0.9); border: none;">
       <div class="modal-header" style="background: transparent; border-bottom: 1px solid rgba(255,255,255,0.1);">
         <h3 class="modal-title" id="lightboxTitle" style="color: #fff;">Document Preview</h3>
-        <button class="close-btn" id="closeLightboxBtn" style="color: #fff;">&times;</button>
+        <button class="close-btn" id="closeLightboxBtn" style="color: #fff;" onclick="document.getElementById('lightboxModal').classList.remove('active')">&times;</button>
       </div>
       <div class="modal-body" style="display: flex; justify-content: center; align-items: center; min-height: 400px;" id="lightboxContent">
         <!-- Image or iframe PDF preview here -->
@@ -377,7 +377,7 @@
     <div class="modal-box" style="max-width: 500px;">
       <div class="modal-header">
         <h3 class="modal-title" id="calendarTitle">📅 Expiry Calendar</h3>
-        <button class="close-btn" id="closeCalendarModalBtn">&times;</button>
+        <button class="close-btn" id="closeCalendarModalBtn" onclick="closeCalendarModal()">&times;</button>
       </div>
       <div class="modal-body">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -396,7 +396,7 @@
     <div class="modal-box" style="max-width: 420px;">
       <div class="modal-header">
         <h3 class="modal-title">🤖 AI Document Scanner</h3>
-        <button class="close-btn" id="closeOcrModalBtn">&times;</button>
+        <button class="close-btn" id="closeOcrModalBtn" onclick="document.getElementById('ocrModal').classList.remove('active')">&times;</button>
       </div>
       <div class="modal-body" style="text-align: center;">
         <div id="ocrStatus" style="margin-bottom: 1rem;">

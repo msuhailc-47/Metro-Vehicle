@@ -402,23 +402,16 @@ function setupEventListeners() {
     openVehicleModal();
   });
 
-  // Mobile bottom nav - helper with touch debouncing to prevent double execution
+  // Mobile bottom nav helper
   function bindMobileNav(elementId, handler) {
     const el = document.getElementById(elementId);
     if (!el) return;
-
-    let lastTapTime = 0;
-    const execute = (e) => {
-      e.preventDefault();
+    el.addEventListener('click', (e) => {
       e.stopPropagation();
-      const now = Date.now();
-      if (now - lastTapTime < 400) return; // Ignore duplicate touch/click events within 400ms
-      lastTapTime = now;
+      document.querySelectorAll('.mobile-nav .nav-item').forEach(item => item.classList.remove('active'));
+      el.classList.add('active');
       handler();
-    };
-
-    el.addEventListener('touchend', execute, { passive: false });
-    el.addEventListener('click', execute);
+    });
   }
 
   bindMobileNav('mobNavAdd', () => openVehicleModal());
@@ -426,21 +419,14 @@ function setupEventListeners() {
   bindMobileNav('mobNavHome', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
   bindMobileNav('mobNavCalendar', () => openCalendarModal());
 
-  // Close Modal Helper - debounced touchend & click for all close buttons
+  // Close Modal Helper
   function bindCloseBtn(btnId, closeFn) {
     const btn = document.getElementById(btnId);
     if (!btn) return;
-    let lastTap = 0;
-    const handler = (e) => {
-      e.preventDefault();
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const now = Date.now();
-      if (now - lastTap < 300) return;
-      lastTap = now;
       closeFn();
-    };
-    btn.addEventListener('touchend', handler, { passive: false });
-    btn.addEventListener('click', handler);
+    });
   }
 
   bindCloseBtn('closeVehicleModalBtn', closeVehicleModal);
