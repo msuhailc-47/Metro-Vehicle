@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vehicle Expiry & Document Management System</title>
+  <meta name="description" content="Mobile-friendly Vehicle Expiry & Document Management App with Live Camera, IndexedDB, and Per-Document Notifications.">
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#2563eb">
+  
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- JSZip Library for downloading all documents as a ZIP package -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <!-- PDF.js for converting PDFs to images for OCR -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  
+  <!-- Tesseract.js OCR Engine for Smart Document Scanning -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+
+  <!-- App Styles -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <header class="app-header">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/>
+          <circle cx="7" cy="17" r="2"/>
+          <path d="M9 17h6"/>
+          <circle cx="17" cy="17" r="2"/>
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title">VehicleEx Pro</h1>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <!-- Notification Bell -->
+      <button class="icon-btn" id="notifBellBtn" title="Notification Center">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+          <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+        </svg>
+        <span class="badge-dot" id="notifBadge" style="display: none;">0</span>
+      </button>
+
+      <!-- Theme Switcher -->
+      <button class="icon-btn" id="themeToggleBtn" title="Toggle Theme">
+        <svg id="themeIconSun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: none;">
+          <circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+        </svg>
+        <svg id="themeIconMoon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+        </svg>
+      </button>
+
+    </div>
+  </header>
+
+  <!-- Main App Layout Container -->
+  <main class="container">
+    
+    <!-- Metrics Dashboard -->
+    <section class="metrics-grid">
+      <div class="metric-card">
+        <div class="metric-icon blue">🚗</div>
+        <div class="metric-info">
+          <h4>Total Vehicles</h4>
+          <div class="val" id="statTotal">0</div>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-icon red">🚨</div>
+        <div class="metric-info">
+          <h4>Expired Docs</h4>
+          <div class="val" id="statExpired">0</div>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-icon amber">⚠️</div>
+        <div class="metric-info">
+          <h4>Expiring &lt; 30 Days</h4>
+          <div class="val" id="statExpiring">0</div>
+        </div>
+      </div>
+
+      <div class="metric-card">
+        <div class="metric-icon green">✅</div>
+        <div class="metric-info">
+          <h4>Valid Documents</h4>
+          <div class="val" id="statValid">0</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toolbar: Search & Actions -->
+    <section class="toolbar">
+      <div class="search-box">
+        <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input type="text" id="searchInput" placeholder="Search vehicle no, owner, or status...">
+      </div>
+
+      <div class="filter-pills">
+        <button class="pill-btn active" data-filter="all">All Vehicles</button>
+        <button class="pill-btn" data-filter="expired">🚨 Expired</button>
+        <button class="pill-btn" data-filter="expiring">⚠️ Expiring Soon</button>
+        <button class="pill-btn" data-filter="valid">✅ Valid</button>
+      </div>
+
+      <div style="display: flex; gap: 0.5rem;">
+        <button class="primary-btn" id="openAddVehicleModalBtn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          Add Vehicle
+        </button>
+
+        <button class="secondary-btn" id="exportCsvBtn" title="Export Excel / CSV">
+          📊 CSV
+        </button>
+
+        <button class="secondary-btn" id="openCalendarBtn" title="Expiry Calendar" onclick="openCalendarModal()">
+          📅 Calendar
+        </button>
+      </div>
+    </section>
+
+    <!-- Vehicles List Grid View -->
+    <section id="vehiclesGrid" class="vehicles-grid">
+      <!-- Vehicle Cards render here dynamically -->
+    </section>
+
+  </main>
+
+  <!-- Mobile Bottom Navigation Bar -->
+  <nav class="mobile-nav">
+    <div class="nav-item active" id="mobNavHome">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      <span>Home</span>
+    </div>
+    <div class="nav-item" id="mobNavAdd">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+      <span>Add New</span>
+    </div>
+    <div class="nav-item" id="mobNavNotif">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span>Alerts</span>
+    </div>
+    <div class="nav-item" id="mobNavCalendar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <span>Calendar</span>
+    </div>
+  </nav>
+
+  <!-- ==================== MODALS ==================== -->
+
+  <!-- 1. Add / Edit Vehicle Modal -->
+  <div class="modal-overlay" id="vehicleModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 class="modal-title" id="vehicleModalTitle">Add Vehicle Record</h3>
+        <button class="close-btn" id="closeVehicleModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="vehicleForm">
+          <input type="hidden" id="editVehicleId">
+          
+          <div class="form-grid">
+            <div class="form-group full-width">
+              <label for="vehicleNo">Vehicle Number *</label>
+              <input type="text" id="vehicleNo" placeholder="e.g. KL-07-AB-1234" required style="text-transform: uppercase;">
+            </div>
+
+            <div class="form-group">
+              <label for="regDate">Registration Date</label>
+              <input type="date" id="regDate">
+            </div>
+
+            <div class="form-group">
+              <label for="fitnessUpto">Fitness Upto Date & Time</label>
+              <input type="datetime-local" id="fitnessUpto">
+            </div>
+
+            <div class="form-group">
+              <label for="insuranceUpto">Insurance Upto Date & Time</label>
+              <input type="datetime-local" id="insuranceUpto">
+            </div>
+
+            <div class="form-group">
+              <label for="taxUpto">Tax Upto Date & Time</label>
+              <input type="datetime-local" id="taxUpto">
+            </div>
+
+            <div class="form-group">
+              <label for="permitUpto">Permit Upto Date & Time</label>
+              <input type="datetime-local" id="permitUpto">
+            </div>
+
+            <div class="form-group">
+              <label for="nationalPermit">National Permit Upto</label>
+              <input type="datetime-local" id="nationalPermit">
+            </div>
+
+            <div class="form-group">
+              <label for="pucc">PUCC Upto Date & Time</label>
+              <input type="datetime-local" id="pucc">
+            </div>
+
+            <div class="form-group">
+              <label for="gps">GPS Status / Remarks</label>
+              <input type="text" id="gps" placeholder="Active / Device ID / Notes">
+            </div>
+
+            <!-- Upload Documents Section -->
+            <div class="form-group full-width" style="margin-top: 0.5rem;">
+              <label>Attach Documents / Photos</label>
+              
+              <!-- Stacked Mobile File Upload Buttons -->
+              <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.5rem;">
+                
+                <!-- 1. Native Camera Photo Button -->
+                <label class="mobile-upload-label">
+                  📷 Take Photo with Camera
+                  <input type="file" id="nativeCameraInput" accept="image/*" capture="environment">
+                </label>
+
+                <!-- 2. Live WebCam Scanner Modal Trigger -->
+                <button type="button" class="secondary-btn" id="openCameraScannerBtn" style="width: 100%; justify-content: center; min-height: 52px; font-weight: 700;">
+                  📹 Live Cam Scanner
+                </button>
+
+                <!-- 3. Choose Files from Gallery -->
+                <label class="mobile-upload-label">
+                  📁 Choose Photos / PDFs from Device
+                  <input type="file" id="fileInput" multiple accept="image/*,.pdf">
+                </label>
+              </div>
+
+              <small style="color: var(--text-muted); display: block; margin-top: 0.6rem;" id="formFileCountText">No files selected.</small>
+              
+              <!-- Attached Files Preview Grid with individual Remove buttons -->
+              <div id="formAttachedPreview" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 0.5rem; margin-top: 0.75rem;"></div>
+            </div>
+
+          </div>
+
+          <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
+            <button type="button" class="secondary-btn" id="cancelVehicleModalBtn">Cancel</button>
+            <button type="submit" class="primary-btn" id="saveVehicleBtn">Save Record</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. In-App Camera Scanner Modal -->
+  <div class="modal-overlay" id="cameraModal">
+    <div class="modal-box" style="max-width: 540px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Live Document Scanner</h3>
+        <button class="close-btn" id="closeCameraModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="camera-view-container">
+          <video id="cameraVideo" autoplay playsinline></video>
+          <canvas id="cameraCanvas" style="display: none;"></canvas>
+        </div>
+
+        <div class="form-group" style="margin-top: 1rem;">
+          <label for="cameraDocCategory">Document Category</label>
+          <select id="cameraDocCategory">
+            <option value="RC">RC Copy</option>
+            <option value="Insurance">Insurance Policy</option>
+            <option value="Fitness">Fitness Certificate</option>
+            <option value="Tax">Tax Receipt</option>
+            <option value="Permit">Permit Pass</option>
+            <option value="PUCC">PUCC Certificate</option>
+            <option value="Other">Other Document</option>
+          </select>
+        </div>
+
+        <div style="margin-top: 1rem; display: flex; justify-content: space-between; align-items: center;">
+          <button class="secondary-btn" id="switchCameraBtn">🔄 Switch Camera</button>
+          <button class="primary-btn" id="takeSnapshotBtn">📸 Capture Snapshot</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Document Manager Modal (Add / Edit / Remove / Update / Rename / Download) -->
+  <div class="modal-overlay" id="docManagerModal">
+    <div class="modal-box" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="docManagerTitle">Vehicle Documents</h3>
+        <button class="close-btn" id="closeDocManagerBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 0.5rem;">
+          <h4 style="font-size: 0.95rem; color: var(--text-muted);">Attached Files</h4>
+          <div style="display: flex; gap: 0.5rem;">
+            <button class="secondary-btn" id="ocrScanAllBtn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+              🤖 AI Scan
+            </button>
+            <button class="primary-btn" id="downloadAllZipBtn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+              📦 Download All (ZIP)
+            </button>
+          </div>
+        </div>
+
+        <!-- Documents List -->
+        <div id="docListContainer" class="doc-list-manager">
+          <!-- Dynamically populated -->
+        </div>
+
+        <!-- Add Additional Document inline -->
+        <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+          <h4 style="font-size: 0.9rem; margin-bottom: 0.6rem;">Upload Additional Documents</h4>
+          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+            <label class="mobile-upload-label" style="min-height: 48px;">
+              📷 Add Photo via Camera
+              <input type="file" id="extraCameraInput" accept="image/*" capture="environment">
+            </label>
+            <label class="mobile-upload-label" style="min-height: 48px;">
+              📁 Add Files from Device
+              <input type="file" id="extraFileInput" multiple accept="image/*,.pdf">
+            </label>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Notification Center Modal -->
+  <div class="modal-overlay" id="notifModal">
+    <div class="modal-box" style="max-width: 500px;">
+      <div class="modal-header">
+        <h3 class="modal-title">Expiry Notifications</h3>
+        <button class="close-btn" id="closeNotifModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="notifListContainer" style="display: flex; flex-direction: column; gap: 0.75rem; max-height: 60vh; overflow-y: auto;">
+          <!-- Dynamically rendered notification items -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. Lightbox Image / PDF Preview Modal -->
+  <div class="modal-overlay" id="lightboxModal" style="z-index: 2000;">
+    <div class="modal-box" style="max-width: 800px; background: rgba(0,0,0,0.9); border: none;">
+      <div class="modal-header" style="background: transparent; border-bottom: 1px solid rgba(255,255,255,0.1);">
+        <h3 class="modal-title" id="lightboxTitle" style="color: #fff;">Document Preview</h3>
+        <button class="close-btn" id="closeLightboxBtn" style="color: #fff;">&times;</button>
+      </div>
+      <div class="modal-body" style="display: flex; justify-content: center; align-items: center; min-height: 400px;" id="lightboxContent">
+        <!-- Image or iframe PDF preview here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. Calendar View Modal -->
+  <div class="modal-overlay" id="calendarModal">
+    <div class="modal-box" style="max-width: 500px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="calendarTitle">📅 Expiry Calendar</h3>
+        <button class="close-btn" id="closeCalendarModalBtn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+          <button class="secondary-btn" id="calPrevMonth" onclick="calendarViewMonth--; if(calendarViewMonth<0){calendarViewMonth=11;calendarViewYear--;} renderCalendar();" style="padding: 0.4rem 0.8rem;">◀ Prev</button>
+          <h4 id="calMonthLabel" style="font-size: 1rem; font-weight: 700;"></h4>
+          <button class="secondary-btn" id="calNextMonth" onclick="calendarViewMonth++; if(calendarViewMonth>11){calendarViewMonth=0;calendarViewYear++;} renderCalendar();" style="padding: 0.4rem 0.8rem;">Next ▶</button>
+        </div>
+        <div id="calendarGrid" class="calendar-grid"></div>
+        <div id="calDayDetails" style="margin-top: 1rem;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. OCR Scanning Progress Modal -->
+  <div class="modal-overlay" id="ocrModal" style="z-index: 2100;">
+    <div class="modal-box" style="max-width: 420px;">
+      <div class="modal-header">
+        <h3 class="modal-title">🤖 AI Document Scanner</h3>
+        <button class="close-btn" id="closeOcrModalBtn">&times;</button>
+      </div>
+      <div class="modal-body" style="text-align: center;">
+        <div id="ocrStatus" style="margin-bottom: 1rem;">
+          <div class="ocr-spinner"></div>
+          <p style="margin-top: 1rem; font-weight: 600;">Scanning document...</p>
+          <p style="font-size: 0.85rem; color: var(--text-muted);">AI is reading text from your document</p>
+        </div>
+        <div id="ocrProgress" style="width: 100%; height: 8px; background: var(--bg-main); border-radius: 4px; overflow: hidden; margin-bottom: 1rem;">
+          <div id="ocrProgressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, var(--primary), #6366f1); border-radius: 4px; transition: width 0.3s ease;"></div>
+        </div>
+        <div id="ocrResults" style="text-align: left; display: none;"></div>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- Main JavaScript App File -->
+  <script src="app.js"></script>
+</body>
+</html>
