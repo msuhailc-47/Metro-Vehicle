@@ -1577,10 +1577,18 @@ function closeCompanyModal() {
 function copySyncKey() {
   if (currentSyncKey) {
     navigator.clipboard.writeText(currentSyncKey).then(() => {
-      alert('📋 Workspace Sync Key copied to clipboard!\n\nShare this key with staff members so they can join this workspace.');
+      alert('📋 Workspace Sync Key copied to clipboard!\n\nKey: ' + currentSyncKey);
     }).catch(() => {
       prompt('Copy your Workspace Sync Key:', currentSyncKey);
     });
+  }
+}
+
+function shareSyncKeyWhatsApp() {
+  if (currentSyncKey) {
+    const text = `🏢 Join our Company Vehicle Workspace in VehicleEx Pro!\n\nCompany Name: ${currentCompanyName || 'Company Workspace'}\nWorkspace Sync Key: ${currentSyncKey}\n\nOpen app & paste this key in Company Sync: https://msuhailc-47.github.io/Metro-Vehicle/`;
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
   }
 }
 
