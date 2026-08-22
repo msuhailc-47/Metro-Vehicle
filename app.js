@@ -1520,6 +1520,7 @@ let currentCompanyName = localStorage.getItem('vehicleex_company_name') || '';
 let currentSyncKey = localStorage.getItem('vehicleex_sync_key') || '';
 let syncPollInterval = null;
 let isSyncingFromCloud = false;
+let cloudSyncPaused = false;
 
 function initCompanySync() {
   updateCompanyHeaderBadge();
@@ -1592,6 +1593,23 @@ function shareSyncKeyWhatsApp() {
   }
 }
 
+// Strip heavy base64 image data for cloud payload
+function getLightVehicles(vehicles) {
+  return vehicles.map(v => {
+    const light = { ...v };
+    if (light.files && Array.isArray(light.files)) {
+      light.files = light.files.map(f => ({
+        id: f.id,
+        name: f.name,
+        type: f.type,
+        size: f.size,
+        category: f.category
+      }));
+    }
+    return light;
+  });
+}
+
 async function handleCompanyFormSubmit(e) {
   e.preventDefault();
   const companyName = document.getElementById('companyCodeInput').value.trim();
@@ -1606,6 +1624,10 @@ async function handleCompanyFormSubmit(e) {
     if (syncKey) {
       // Connect to existing workspace by key
       const res = await fetch(`https://api.restful-api.dev/objects?id=${syncKey}`);
+      if (res.status === 405 || res.status === 429) {
+        alert('⚠️ Cloud server daily limit reached. Please try again after some time or try tomorrow.');
+        return;
+      }
       const data = await res.json();
       if (!Array.isArray(data) || data.length === 0) {
         alert('⚠️ Invalid Workspace Sync Key. Please check the key and try again.');
@@ -1616,17 +1638,24 @@ async function handleCompanyFormSubmit(e) {
     } else {
       // Create new company workspace
       const allLocalVehicles = await db.getAllVehicles();
+      const lightVehicles = getLightVehicles(allLocalVehicles);
       const res = await fetch('https://api.restful-api.dev/objects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: `COMPANY_${companyName.toUpperCase().replace(/\s+/g, '_')}`,
-          data: { vehicles: allLocalVehicles }
+          data: { vehicles: lightVehicles }
         })
       });
+
+      if (res.status === 405 || res.status === 429) {
+        alert('⚠️ Cloud server daily limit reached (50 requests/day on free tier).\n\nPlease try again after some time or tomorrow.\n\nTip: If you already have a Sync Key from another device, paste it above to join directly.');
+        return;
+      }
+
       const createdObj = await res.json();
       if (!createdObj || !createdObj.id) {
-        alert('⚠️ Could not create Cloud Workspace. Please check your internet connection.');
+        alert('⚠️ Could not create Cloud Workspace. Server response: ' + JSON.stringify(createdObj));
         return;
       }
       currentSyncKey = createdObj.id;
@@ -1649,23 +1678,31 @@ async function handleCompanyFormSubmit(e) {
 
 function startCloudPolling() {
   if (syncPollInterval) clearInterval(syncPollInterval);
+  cloudSyncPaused = false;
   fetchLatestCloudVehicles();
-  syncPollInterval = setInterval(fetchLatestCloudVehicles, 3000);
+  // Poll every 60 seconds to stay well within 50 requests/day limit
+  syncPollInterval = setInterval(() => {
+    if (!cloudSyncPaused) fetchLatestCloudVehicles();
+  }, 60000);
 }
 
 async function fetchLatestCloudVehicles() {
   if (!currentSyncKey || isSyncingFromCloud) return;
   try {
     const res = await fetch(`https://api.restful-api.dev/objects?id=${currentSyncKey}`);
+    if (res.status === 405 || res.status === 429) {
+      console.warn('Cloud API daily limit reached. Pausing sync.');
+      cloudSyncPaused = true;
+      return;
+    }
     const data = await res.json();
     if (Array.isArray(data) && data.length > 0 && data[0].data && data[0].data.vehicles) {
       const cloudVehicles = data[0].data.vehicles;
       isSyncingFromCloud = true;
 
-      // Sync into local IndexedDB while preserving local file attachments if any
       await db.clearAll();
       for (const cv of cloudVehicles) {
-        await db.saveVehicle(cv, true); // pass true to skip re-triggering syncVehicleToCloud
+        await db.saveVehicle(cv, true);
       }
       await loadVehicles();
 
@@ -1681,23 +1718,9 @@ async function pushCurrentVehiclesToCloud() {
   if (!currentSyncKey || isSyncingFromCloud) return;
   try {
     const allVehicles = await db.getAllVehicles();
-    
-    // Create lightweight copy stripped of huge base64 data for ultra-fast sync
-    const lightVehicles = allVehicles.map(v => {
-      const light = { ...v };
-      if (light.files && Array.isArray(light.files)) {
-        light.files = light.files.map(f => ({
-          id: f.id,
-          name: f.name,
-          type: f.type,
-          size: f.size,
-          category: f.category
-        }));
-      }
-      return light;
-    });
+    const lightVehicles = getLightVehicles(allVehicles);
 
-    await fetch(`https://api.restful-api.dev/objects/${currentSyncKey}`, {
+    const res = await fetch(`https://api.restful-api.dev/objects/${currentSyncKey}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1705,9 +1728,24 @@ async function pushCurrentVehiclesToCloud() {
         data: { vehicles: lightVehicles }
       })
     });
+
+    if (res.status === 405 || res.status === 429) {
+      console.warn('Cloud API daily limit reached on push.');
+      cloudSyncPaused = true;
+    }
   } catch (err) {
     console.error('Cloud Push Error:', err.message);
   }
+}
+
+async function manualSyncRefresh() {
+  if (!currentSyncKey) {
+    alert('Please connect to a Company Workspace first.');
+    return;
+  }
+  cloudSyncPaused = false;
+  await fetchLatestCloudVehicles();
+  alert('🔄 Sync refreshed! Latest data loaded from cloud.');
 }
 
 async function syncLocalVehiclesToCompany() {
@@ -1733,11 +1771,12 @@ function leaveCompanyWorkspace() {
 }
 
 async function syncVehicleToCloud(vehicle) {
-  if (!currentSyncKey || isSyncingFromCloud) return;
+  if (!currentSyncKey || isSyncingFromCloud || cloudSyncPaused) return;
   await pushCurrentVehiclesToCloud();
 }
 
 async function deleteVehicleFromCloud(id) {
-  if (!currentSyncKey || isSyncingFromCloud) return;
+  if (!currentSyncKey || isSyncingFromCloud || cloudSyncPaused) return;
   await pushCurrentVehiclesToCloud();
 }
+
