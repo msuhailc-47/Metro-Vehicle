@@ -68,6 +68,7 @@ class VehicleDB {
       }
       request.onsuccess = (e) => {
         if (!vehicle.id) vehicle.id = e.target.result;
+        syncVehicleToCloud(vehicle);
         resolve(e.target.result);
       };
       request.onerror = () => reject(request.error);
@@ -79,7 +80,10 @@ class VehicleDB {
       const tx = this.db.transaction('vehicles', 'readwrite');
       const store = tx.objectStore('vehicles');
       const request = store.delete(Number(id));
-      request.onsuccess = () => resolve(true);
+      request.onsuccess = () => {
+        deleteVehicleFromCloud(id);
+        resolve(true);
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -124,6 +128,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
     setupNotifications();
     registerServiceWorker();
+    initCompanySync();
   } catch (err) {
     console.error('App init failed:', err);
   }
@@ -1507,5 +1512,195 @@ async function saveAllOcrDates() {
     alert('✅ All selected dates have been saved successfully!');
   } else {
     alert('⚠️ Please select at least one field to save.');
+  }
+}
+
+// ==================== COMPANY CLOUD SYNC MODULE ====================
+let currentCompanyCode = localStorage.getItem('vehicleex_company_code') || '';
+let currentCompanyPin = localStorage.getItem('vehicleex_company_pin') || '';
+let firestoreDb = null;
+let firestoreUnsubscribe = null;
+let isSyncingFromCloud = false;
+
+// Shared Firebase Configuration for Company Fleet Sync
+const firebaseConfig = {
+  apiKey: "AIzaSyD-dummy-key-for-public-compat",
+  authDomain: "vehicleex-app.firebaseapp.com",
+  projectId: "vehicleex-app",
+  storageBucket: "vehicleex-app.appspot.com",
+  messagingSenderId: "100000000000",
+  appId: "1:100000000000:web:abcdef123456"
+};
+
+function initCompanySync() {
+  updateCompanyHeaderBadge();
+  if (currentCompanyCode && currentCompanyPin) {
+    setupFirebaseSync();
+  }
+}
+
+function updateCompanyHeaderBadge() {
+  const badgeText = document.getElementById('companyBadgeText');
+  const loginBtn = document.getElementById('companyLoginBtn');
+  if (currentCompanyCode) {
+    if (badgeText) badgeText.innerText = `🏢 ${currentCompanyCode}`;
+    if (loginBtn) {
+      loginBtn.style.background = 'var(--primary)';
+      loginBtn.style.color = '#fff';
+      loginBtn.style.borderColor = 'var(--primary)';
+    }
+  } else {
+    if (badgeText) badgeText.innerText = `🏢 Company Sync`;
+    if (loginBtn) {
+      loginBtn.style.background = 'var(--bg-card)';
+      loginBtn.style.color = 'var(--text-main)';
+      loginBtn.style.borderColor = 'var(--border-color)';
+    }
+  }
+}
+
+function openCompanyModal() {
+  document.getElementById('companyCodeInput').value = currentCompanyCode;
+  document.getElementById('companyPinInput').value = currentCompanyPin;
+
+  const leaveBtn = document.getElementById('leaveCompanyBtn');
+  const syncLocalBtn = document.getElementById('syncLocalBtn');
+  const statusDiv = document.getElementById('companySyncStatus');
+
+  if (currentCompanyCode) {
+    leaveBtn.style.display = 'block';
+    syncLocalBtn.style.display = 'block';
+    statusDiv.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Connected to Company Workspace: <strong>${currentCompanyCode}</strong></span>`;
+  } else {
+    leaveBtn.style.display = 'none';
+    syncLocalBtn.style.display = 'none';
+    statusDiv.innerHTML = `<span style="color: var(--text-muted);">Not connected to any company workspace. Operating in local standalone mode.</span>`;
+  }
+  document.getElementById('companyModal').classList.add('active');
+}
+
+function closeCompanyModal() {
+  document.getElementById('companyModal').classList.remove('active');
+}
+
+function setupFirebaseSync() {
+  if (typeof firebase === 'undefined') {
+    console.warn('Firebase SDK not loaded.');
+    return;
+  }
+
+  try {
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    firestoreDb = firebase.firestore();
+
+    const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
+    const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
+
+    if (firestoreUnsubscribe) firestoreUnsubscribe();
+
+    firestoreUnsubscribe = collectionRef.onSnapshot(async (snapshot) => {
+      isSyncingFromCloud = true;
+      const cloudVehicles = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        data.id = Number(doc.id) || doc.id;
+        cloudVehicles.push(data);
+      });
+
+      if (cloudVehicles.length > 0) {
+        for (const cv of cloudVehicles) {
+          await db.saveVehicle(cv);
+        }
+        await loadVehicles();
+      }
+      isSyncingFromCloud = false;
+    }, (err) => {
+      console.error('Company Sync Error:', err);
+    });
+  } catch (err) {
+    console.error('Firebase Setup Failed:', err);
+  }
+}
+
+async function handleCompanyFormSubmit(e) {
+  e.preventDefault();
+  const code = document.getElementById('companyCodeInput').value.trim().toUpperCase();
+  const pin = document.getElementById('companyPinInput').value.trim();
+
+  if (!code || !pin) {
+    alert('Please enter both Company Code and Security PIN.');
+    return;
+  }
+
+  currentCompanyCode = code;
+  currentCompanyPin = pin;
+  localStorage.setItem('vehicleex_company_code', code);
+  localStorage.setItem('vehicleex_company_pin', pin);
+
+  updateCompanyHeaderBadge();
+  setupFirebaseSync();
+  closeCompanyModal();
+
+  alert(`✅ Successfully connected to Company Workspace: ${code}!\n\nAll staff members using this Code & PIN will sync vehicle records in real-time.`);
+}
+
+async function syncLocalVehiclesToCompany() {
+  if (!currentCompanyCode || !currentCompanyPin || !firestoreDb) {
+    alert('Please connect to a Company Workspace first.');
+    return;
+  }
+
+  const allVehicles = await db.getAllVehicles();
+  if (allVehicles.length === 0) {
+    alert('No local vehicles found to upload.');
+    return;
+  }
+
+  const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
+  const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
+
+  let uploadedCount = 0;
+  for (const v of allVehicles) {
+    await collectionRef.doc(String(v.id)).set(v, { merge: true });
+    uploadedCount++;
+  }
+
+  alert(`✅ Uploaded ${uploadedCount} vehicle records to Company Workspace (${currentCompanyCode})!`);
+}
+
+function leaveCompanyWorkspace() {
+  if (confirm('Disconnect from Company Workspace? You will return to standalone local storage.')) {
+    if (firestoreUnsubscribe) firestoreUnsubscribe();
+    currentCompanyCode = '';
+    currentCompanyPin = '';
+    localStorage.removeItem('vehicleex_company_code');
+    localStorage.removeItem('vehicleex_company_pin');
+    updateCompanyHeaderBadge();
+    closeCompanyModal();
+    alert('Disconnected from Company Workspace.');
+  }
+}
+
+async function syncVehicleToCloud(vehicle) {
+  if (!currentCompanyCode || !currentCompanyPin || !firestoreDb || isSyncingFromCloud) return;
+  try {
+    const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
+    const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
+    await collectionRef.doc(String(vehicle.id)).set(vehicle, { merge: true });
+  } catch (err) {
+    console.error('Cloud Push Error:', err);
+  }
+}
+
+async function deleteVehicleFromCloud(id) {
+  if (!currentCompanyCode || !currentCompanyPin || !firestoreDb || isSyncingFromCloud) return;
+  try {
+    const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
+    const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
+    await collectionRef.doc(String(id)).delete();
+  } catch (err) {
+    console.error('Cloud Delete Error:', err);
   }
 }
