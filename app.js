@@ -1515,17 +1515,42 @@ async function saveAllOcrDates() {
   }
 }
 
-// ==================== COMPANY CLOUD SYNC MODULE ====================
+// ==================== COMPANY CLOUD SYNC MODULE (FIREBASE REALTIME DB) ====================
+const firebaseConfig = {
+  apiKey: "AIzaSyDPQG7XrJiQlh5pJGVuEufI8ejiJ7oZqYw",
+  authDomain: "vehicleex-85816.firebaseapp.com",
+  databaseURL: "https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "vehicleex-85816",
+  storageBucket: "vehicleex-85816.firebasestorage.app",
+  messagingSenderId: "312893614750",
+  appId: "1:312893614750:web:a80826ca6f741775dd698f",
+  measurementId: "G-JFTKPXXF87"
+};
+
+let firebaseDb = null;
+let firebaseListenerRef = null;
 let currentCompanyName = localStorage.getItem('vehicleex_company_name') || '';
 let currentSyncKey = localStorage.getItem('vehicleex_sync_key') || '';
-let syncPollInterval = null;
 let isSyncingFromCloud = false;
-let cloudSyncPaused = false;
+
+function initFirebaseApp() {
+  try {
+    if (typeof firebase !== 'undefined' && !firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    if (typeof firebase !== 'undefined' && firebase.database) {
+      firebaseDb = firebase.database();
+    }
+  } catch (e) {
+    console.warn('Firebase init notice:', e.message);
+  }
+}
 
 function initCompanySync() {
+  initFirebaseApp();
   updateCompanyHeaderBadge();
   if (currentSyncKey) {
-    startCloudPolling();
+    listenToFirebaseWorkspace();
   }
 }
 
@@ -1587,13 +1612,12 @@ function copySyncKey() {
 
 function shareSyncKeyWhatsApp() {
   if (currentSyncKey) {
-    const text = `🏢 Join our Company Vehicle Workspace in VehicleEx Pro!\n\nCompany Name: ${currentCompanyName || 'Company Workspace'}\nWorkspace Sync Key: ${currentSyncKey}\n\nOpen app & paste this key in Company Sync: https://msuhailc-47.github.io/Metro-Vehicle/`;
+    const text = `🏢 Join our Company Vehicle Workspace in VehicleEx Pro!\n\nCompany: ${currentCompanyName || 'Company Workspace'}\nSync Key: ${currentSyncKey}\n\nOpen app & paste this key in Company Sync: https://msuhailc-47.github.io/Metro-Vehicle/`;
     const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   }
 }
 
-// Strip heavy base64 image data for cloud payload
 function getLightVehicles(vehicles) {
   return vehicles.map(v => {
     const light = { ...v };
@@ -1610,10 +1634,17 @@ function getLightVehicles(vehicles) {
   });
 }
 
+function generateSyncKey(companyName) {
+  const prefix = companyName.replace(/[^A-Za-z0-9]/g, '').substring(0, 6).toUpperCase() || 'FLEET';
+  const randNum = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}-${randNum}`;
+}
+
 async function handleCompanyFormSubmit(e) {
   e.preventDefault();
+  initFirebaseApp();
   const companyName = document.getElementById('companyCodeInput').value.trim();
-  let syncKey = document.getElementById('syncKeyInput').value.trim();
+  let syncKey = document.getElementById('syncKeyInput').value.trim().toUpperCase();
 
   if (!companyName) {
     alert('Please enter a Company Name / Fleet Title.');
@@ -1622,90 +1653,92 @@ async function handleCompanyFormSubmit(e) {
 
   try {
     if (syncKey) {
-      // Connect to existing workspace by key
-      const res = await fetch(`https://api.restful-api.dev/objects?id=${syncKey}`);
-      if (res.status === 405 || res.status === 429) {
-        alert('⚠️ Cloud server daily limit reached. Please try again after some time or try tomorrow.');
-        return;
-      }
+      // Connect to existing workspace
+      const res = await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${syncKey}.json`);
       const data = await res.json();
-      if (!Array.isArray(data) || data.length === 0) {
-        alert('⚠️ Invalid Workspace Sync Key. Please check the key and try again.');
+      if (!data) {
+        alert('⚠️ Workspace not found with this Sync Key. Please check the key or create a new workspace.');
         return;
       }
       currentSyncKey = syncKey;
-      currentCompanyName = companyName;
+      currentCompanyName = data.name || companyName;
     } else {
-      // Create new company workspace
+      // Create new workspace with clean friendly key
+      currentSyncKey = generateSyncKey(companyName);
+      currentCompanyName = companyName;
+      
       const allLocalVehicles = await db.getAllVehicles();
       const lightVehicles = getLightVehicles(allLocalVehicles);
-      const res = await fetch('https://api.restful-api.dev/objects', {
-        method: 'POST',
+      
+      const payload = {
+        name: currentCompanyName,
+        vehicles: lightVehicles,
+        createdAt: new Date().toISOString()
+      };
+
+      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: `COMPANY_${companyName.toUpperCase().replace(/\s+/g, '_')}`,
-          data: { vehicles: lightVehicles }
-        })
+        body: JSON.stringify(payload)
       });
-
-      if (res.status === 405 || res.status === 429) {
-        alert('⚠️ Cloud server daily limit reached (50 requests/day on free tier).\n\nPlease try again after some time or tomorrow.\n\nTip: If you already have a Sync Key from another device, paste it above to join directly.');
-        return;
-      }
-
-      const createdObj = await res.json();
-      if (!createdObj || !createdObj.id) {
-        alert('⚠️ Could not create Cloud Workspace. Server response: ' + JSON.stringify(createdObj));
-        return;
-      }
-      currentSyncKey = createdObj.id;
-      currentCompanyName = companyName;
     }
 
     localStorage.setItem('vehicleex_company_name', currentCompanyName);
     localStorage.setItem('vehicleex_sync_key', currentSyncKey);
 
     updateCompanyHeaderBadge();
-    startCloudPolling();
+    listenToFirebaseWorkspace();
     closeCompanyModal();
 
-    alert(`✅ Connected to Workspace: ${currentCompanyName}!\n\nSync Key: ${currentSyncKey}\n\nAll staff members using this Sync Key will receive real-time updates.`);
+    alert(`✅ Connected to Workspace: ${currentCompanyName}!\n\nSync Key: ${currentSyncKey}\n\nLive real-time sync is now active between PC and mobile phones!`);
   } catch (err) {
     console.error('Company Connection Error:', err);
     alert('⚠️ Connection Error: ' + err.message);
   }
 }
 
-function startCloudPolling() {
-  if (syncPollInterval) clearInterval(syncPollInterval);
-  cloudSyncPaused = false;
+function listenToFirebaseWorkspace() {
+  if (!currentSyncKey) return;
+  initFirebaseApp();
+
+  try {
+    if (firebaseDb) {
+      if (firebaseListenerRef) firebaseListenerRef.off();
+      firebaseListenerRef = firebaseDb.ref('workspaces/' + currentSyncKey);
+      firebaseListenerRef.on('value', async (snapshot) => {
+        const val = snapshot.val();
+        if (val && Array.isArray(val.vehicles) && !isSyncingFromCloud) {
+          isSyncingFromCloud = true;
+          await db.clearAll();
+          for (const cv of val.vehicles) {
+            await db.saveVehicle(cv, true);
+          }
+          await loadVehicles();
+          isSyncingFromCloud = false;
+        }
+      });
+      return;
+    }
+  } catch (err) {
+    console.warn('Realtime listener fallback to fetch:', err);
+  }
+
+  // REST fallback
   fetchLatestCloudVehicles();
-  // Poll every 60 seconds to stay well within 50 requests/day limit
-  syncPollInterval = setInterval(() => {
-    if (!cloudSyncPaused) fetchLatestCloudVehicles();
-  }, 60000);
 }
 
 async function fetchLatestCloudVehicles() {
   if (!currentSyncKey || isSyncingFromCloud) return;
   try {
-    const res = await fetch(`https://api.restful-api.dev/objects?id=${currentSyncKey}`);
-    if (res.status === 405 || res.status === 429) {
-      console.warn('Cloud API daily limit reached. Pausing sync.');
-      cloudSyncPaused = true;
-      return;
-    }
-    const data = await res.json();
-    if (Array.isArray(data) && data.length > 0 && data[0].data && data[0].data.vehicles) {
-      const cloudVehicles = data[0].data.vehicles;
+    const res = await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`);
+    const val = await res.json();
+    if (val && Array.isArray(val.vehicles)) {
       isSyncingFromCloud = true;
-
       await db.clearAll();
-      for (const cv of cloudVehicles) {
+      for (const cv of val.vehicles) {
         await db.saveVehicle(cv, true);
       }
       await loadVehicles();
-
       isSyncingFromCloud = false;
     }
   } catch (err) {
@@ -1719,19 +1752,20 @@ async function pushCurrentVehiclesToCloud() {
   try {
     const allVehicles = await db.getAllVehicles();
     const lightVehicles = getLightVehicles(allVehicles);
+    const payload = {
+      name: currentCompanyName,
+      vehicles: lightVehicles,
+      updatedAt: new Date().toISOString()
+    };
 
-    const res = await fetch(`https://api.restful-api.dev/objects/${currentSyncKey}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: `COMPANY_${(currentCompanyName || 'WORKSPACE').toUpperCase().replace(/\s+/g, '_')}`,
-        data: { vehicles: lightVehicles }
-      })
-    });
-
-    if (res.status === 405 || res.status === 429) {
-      console.warn('Cloud API daily limit reached on push.');
-      cloudSyncPaused = true;
+    if (firebaseDb) {
+      await firebaseDb.ref('workspaces/' + currentSyncKey).set(payload);
+    } else {
+      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
     }
   } catch (err) {
     console.error('Cloud Push Error:', err.message);
@@ -1743,7 +1777,6 @@ async function manualSyncRefresh() {
     alert('Please connect to a Company Workspace first.');
     return;
   }
-  cloudSyncPaused = false;
   await fetchLatestCloudVehicles();
   alert('🔄 Sync refreshed! Latest data loaded from cloud.');
 }
@@ -1759,7 +1792,7 @@ async function syncLocalVehiclesToCompany() {
 
 function leaveCompanyWorkspace() {
   if (confirm('Disconnect from Company Workspace? You will return to standalone local storage mode.')) {
-    if (syncPollInterval) clearInterval(syncPollInterval);
+    if (firebaseListenerRef) firebaseListenerRef.off();
     currentCompanyName = '';
     currentSyncKey = '';
     localStorage.removeItem('vehicleex_company_name');
@@ -1771,12 +1804,13 @@ function leaveCompanyWorkspace() {
 }
 
 async function syncVehicleToCloud(vehicle) {
-  if (!currentSyncKey || isSyncingFromCloud || cloudSyncPaused) return;
+  if (!currentSyncKey || isSyncingFromCloud) return;
   await pushCurrentVehiclesToCloud();
 }
 
 async function deleteVehicleFromCloud(id) {
-  if (!currentSyncKey || isSyncingFromCloud || cloudSyncPaused) return;
+  if (!currentSyncKey || isSyncingFromCloud) return;
   await pushCurrentVehiclesToCloud();
 }
+
 
