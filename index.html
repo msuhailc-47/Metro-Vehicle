@@ -443,21 +443,29 @@
         </p>
 
         <!-- Active Sync Status Badge -->
-        <div id="activeSyncBadge" style="display: none; background: var(--success-bg); border: 1px solid rgba(16,185,129,0.3); border-radius: var(--radius-sm); padding: 0.75rem; margin-bottom: 1rem;">
-          <div style="font-weight: 700; color: var(--success); font-size: 0.9rem;">✅ Connected & Live Syncing</div>
-          <div style="font-size: 0.8rem; margin-top: 0.3rem;">Company: <strong id="activeCompanyName"></strong></div>
-          
-          <div style="font-size: 0.85rem; margin-top: 0.5rem; background: var(--bg-main); padding: 0.5rem; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; cursor: pointer;" onclick="copySyncKey()" title="Click to copy key">
-            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Key: <code id="activeSyncKey" style="font-weight: 700; color: var(--primary);"></code></span>
-            <span style="font-size: 0.75rem; background: var(--primary); color: #fff; padding: 0.2rem 0.5rem; border-radius: 4px; font-weight: 600;">📋 Copy</span>
+        <div id="activeSyncBadge" style="display: none; background: linear-gradient(135deg, rgba(16,185,129,0.15), rgba(37,99,235,0.15)); border: 1.5px solid var(--success); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 1.25rem;">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <span style="font-weight: 800; color: var(--success); font-size: 0.95rem;">🟢 Live Connected</span>
+            <span id="activeCompanyName" style="font-weight: 700; font-size: 0.9rem; color: var(--text-main);"></span>
           </div>
 
-          <div style="margin-top: 0.5rem; display: flex; gap: 0.4rem;">
-            <button type="button" class="secondary-btn" onclick="shareSyncKeyWhatsApp()" style="width: 50%; padding: 0.4rem; font-size: 0.8rem; font-weight: 600; color: #22c55e; border-color: rgba(34,197,94,0.4); justify-content: center;">
+          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.4rem;">
+            Share this Sync Key with staff members:
+          </div>
+
+          <div style="background: var(--bg-card); border: 1.5px dashed var(--primary); padding: 0.6rem 0.8rem; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; cursor: pointer;" onclick="copySyncKey()" title="Click to copy Sync Key">
+            <span style="font-size: 1.15rem; font-weight: 900; letter-spacing: 1px; color: var(--primary);" id="activeSyncKey"></span>
+            <button type="button" class="primary-btn" onclick="copySyncKey(event)" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; font-weight: 700;">
+              📋 Copy Key
+            </button>
+          </div>
+
+          <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
+            <button type="button" class="secondary-btn" onclick="shareSyncKeyWhatsApp()" style="width: 50%; padding: 0.5rem; font-size: 0.85rem; font-weight: 700; color: #22c55e; border-color: rgba(34,197,94,0.5); justify-content: center;">
               💬 WhatsApp
             </button>
-            <button type="button" class="secondary-btn" onclick="manualSyncRefresh()" style="width: 50%; padding: 0.4rem; font-size: 0.8rem; font-weight: 600; color: var(--primary); border-color: var(--primary); justify-content: center;">
-              🔄 Refresh Sync
+            <button type="button" class="secondary-btn" onclick="manualSyncRefresh()" style="width: 50%; padding: 0.5rem; font-size: 0.85rem; font-weight: 700; color: var(--primary); border-color: var(--primary); justify-content: center;">
+              🔄 Refresh
             </button>
           </div>
         </div>

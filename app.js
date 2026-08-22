@@ -1639,13 +1639,18 @@ function closeCompanyModal() {
   document.getElementById('companyModal').classList.remove('active');
 }
 
-function copySyncKey() {
+function copySyncKey(e) {
+  if (e && e.stopPropagation) e.stopPropagation();
   if (currentSyncKey) {
-    navigator.clipboard.writeText(currentSyncKey).then(() => {
-      alert('📋 Workspace Sync Key copied to clipboard!\n\nKey: ' + currentSyncKey);
-    }).catch(() => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(currentSyncKey).then(() => {
+        alert(`📋 Sync Key Copied to Clipboard!\n\nKey: ${currentSyncKey}\n\nShare this key with staff to join ${currentCompanyName || 'Workspace'}.`);
+      }).catch(() => {
+        prompt('Copy your Workspace Sync Key:', currentSyncKey);
+      });
+    } else {
       prompt('Copy your Workspace Sync Key:', currentSyncKey);
-    });
+    }
   }
 }
 
@@ -1727,9 +1732,14 @@ async function handleCompanyFormSubmit(e) {
 
     updateCompanyHeaderBadge();
     listenToFirebaseWorkspace();
-    closeCompanyModal();
+    openCompanyModal(); // Refresh modal to show prominent sync key & copy button
 
-    alert(`✅ Connected to Workspace: ${currentCompanyName}!\n\nSync Key: ${currentSyncKey}\n\nLive real-time sync is now active between PC and mobile phones!`);
+    // Copy to clipboard automatically on connection
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(currentSyncKey).catch(() => {});
+    }
+
+    alert(`🎉 Connected to Workspace: ${currentCompanyName}!\n\n🔑 Sync Key: ${currentSyncKey}\n(Key automatically copied to clipboard!)`);
   } catch (err) {
     console.error('Company Connection Error:', err);
     alert('⚠️ Connection Error: ' + err.message);
