@@ -1,9 +1,9 @@
 {
   "name": "VehicleEx Pro - Vehicle Expiry & Document Tracker",
   "short_name": "VehicleEx Pro",
-  "description": "Mobile-friendly Vehicle Expiry & Document Management Application with AI Scanner",
-  "start_url": "/Metro-Vehicle/index.html",
-  "scope": "/Metro-Vehicle/",
+  "description": "Mobile-friendly Vehicle Expiry & Document Management Application with AI Scanner and Live Cloud Sync",
+  "start_url": "index.html",
+  "scope": "./",
   "display": "standalone",
   "display_override": ["standalone", "fullscreen"],
   "background_color": "#0f172a",
@@ -37,11 +37,19 @@
       "purpose": "maskable"
     }
   ],
-  "screenshots": [],
+  "screenshots": [
+    {
+      "src": "playstore-feature-graphic-1024x500.png",
+      "sizes": "1024x500",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Vehicle Expiry Dashboard"
+    }
+  ],
   "shortcuts": [
     {
       "name": "Add Vehicle",
-      "url": "/Metro-Vehicle/index.html#add",
+      "url": "index.html#add",
       "description": "Add a new vehicle record"
     }
   ]
