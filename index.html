@@ -432,22 +432,34 @@
       </div>
       <div class="modal-body">
         <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Connect staff members of the same company to share and sync vehicle records in real-time.
+          Share vehicle records live between PC & mobile phones for the same company.
         </p>
+
+        <!-- Active Sync Status Badge -->
+        <div id="activeSyncBadge" style="display: none; background: var(--success-bg); border: 1px solid rgba(16,185,129,0.3); border-radius: var(--radius-sm); padding: 0.75rem; margin-bottom: 1rem;">
+          <div style="font-weight: 700; color: var(--success); font-size: 0.9rem;">✅ Connected & Live Syncing</div>
+          <div style="font-size: 0.8rem; margin-top: 0.3rem;">Company: <strong id="activeCompanyName"></strong></div>
+          <div style="font-size: 0.8rem; margin-top: 0.3rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
+            <span>Sync Key: <code id="activeSyncKey" style="background: var(--bg-main); padding: 0.1rem 0.4rem; border-radius: 4px; font-weight: 700;"></code></span>
+            <button type="button" class="secondary-btn" onclick="copySyncKey()" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">📋 Copy Key</button>
+          </div>
+        </div>
+
         <form id="companyForm" onsubmit="handleCompanyFormSubmit(event)">
           <div class="form-group" style="margin-bottom: 1rem;">
-            <label for="companyCodeInput">Company Name / Code *</label>
-            <input type="text" id="companyCodeInput" placeholder="e.g. METRO-LOGISTICS" required style="text-transform: uppercase;">
-            <small style="color: var(--text-muted);">Staff members must enter the exact same Company Code.</small>
+            <label for="companyCodeInput">Company Name / Fleet Title *</label>
+            <input type="text" id="companyCodeInput" placeholder="e.g. METRO LOGISTICS" required>
           </div>
-          <div class="form-group" style="margin-bottom: 1.5rem;">
-            <label for="companyPinInput">Secret Security PIN *</label>
-            <input type="password" id="companyPinInput" placeholder="e.g. 1234" required>
-            <small style="color: var(--text-muted);">Prevents unauthorized companies from accessing your fleet.</small>
+
+          <div class="form-group" style="margin-bottom: 1.25rem;">
+            <label for="syncKeyInput">Workspace Sync Key (Optional for Staff)</label>
+            <input type="text" id="syncKeyInput" placeholder="Paste Sync Key here if joining staff workspace">
+            <small style="color: var(--text-muted);">Leave empty if creating a new company workspace.</small>
           </div>
+
           <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             <button type="submit" class="primary-btn" style="width: 100%; padding: 0.75rem;">
-              🔗 Join / Sync Company Workspace
+              🔗 Create or Connect Sync Workspace
             </button>
             <button type="button" class="secondary-btn" id="syncLocalBtn" onclick="syncLocalVehiclesToCompany()" style="width: 100%; display: none; margin-top: 0.25rem;">
               ⬆️ Push Local Vehicles to Cloud
@@ -457,8 +469,6 @@
             </button>
           </div>
         </form>
-
-        <div id="companySyncStatus" style="margin-top: 1rem; font-size: 0.85rem; text-align: center;"></div>
       </div>
     </div>
   </div>

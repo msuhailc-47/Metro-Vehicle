@@ -1516,34 +1516,23 @@ async function saveAllOcrDates() {
 }
 
 // ==================== COMPANY CLOUD SYNC MODULE ====================
-let currentCompanyCode = localStorage.getItem('vehicleex_company_code') || '';
-let currentCompanyPin = localStorage.getItem('vehicleex_company_pin') || '';
-let firestoreDb = null;
-let firestoreUnsubscribe = null;
+let currentCompanyName = localStorage.getItem('vehicleex_company_name') || '';
+let currentSyncKey = localStorage.getItem('vehicleex_sync_key') || '';
+let syncPollInterval = null;
 let isSyncingFromCloud = false;
-
-// Shared Firebase Configuration for Company Fleet Sync
-const firebaseConfig = {
-  apiKey: "AIzaSyD-dummy-key-for-public-compat",
-  authDomain: "vehicleex-app.firebaseapp.com",
-  projectId: "vehicleex-app",
-  storageBucket: "vehicleex-app.appspot.com",
-  messagingSenderId: "100000000000",
-  appId: "1:100000000000:web:abcdef123456"
-};
 
 function initCompanySync() {
   updateCompanyHeaderBadge();
-  if (currentCompanyCode && currentCompanyPin) {
-    setupFirebaseSync();
+  if (currentSyncKey) {
+    startCloudPolling();
   }
 }
 
 function updateCompanyHeaderBadge() {
   const badgeText = document.getElementById('companyBadgeText');
   const loginBtn = document.getElementById('companyLoginBtn');
-  if (currentCompanyCode) {
-    if (badgeText) badgeText.innerText = `🏢 ${currentCompanyCode}`;
+  if (currentSyncKey && currentCompanyName) {
+    if (badgeText) badgeText.innerText = `🏢 ${currentCompanyName}`;
     if (loginBtn) {
       loginBtn.style.background = 'var(--primary)';
       loginBtn.style.color = '#fff';
@@ -1560,21 +1549,23 @@ function updateCompanyHeaderBadge() {
 }
 
 function openCompanyModal() {
-  document.getElementById('companyCodeInput').value = currentCompanyCode;
-  document.getElementById('companyPinInput').value = currentCompanyPin;
+  document.getElementById('companyCodeInput').value = currentCompanyName;
+  document.getElementById('syncKeyInput').value = currentSyncKey;
 
   const leaveBtn = document.getElementById('leaveCompanyBtn');
   const syncLocalBtn = document.getElementById('syncLocalBtn');
-  const statusDiv = document.getElementById('companySyncStatus');
+  const activeBadge = document.getElementById('activeSyncBadge');
 
-  if (currentCompanyCode) {
+  if (currentSyncKey) {
     leaveBtn.style.display = 'block';
     syncLocalBtn.style.display = 'block';
-    statusDiv.innerHTML = `<span style="color: var(--success); font-weight: 600;">✅ Connected to Company Workspace: <strong>${currentCompanyCode}</strong></span>`;
+    activeBadge.style.display = 'block';
+    document.getElementById('activeCompanyName').innerText = currentCompanyName || 'Company Workspace';
+    document.getElementById('activeSyncKey').innerText = currentSyncKey;
   } else {
     leaveBtn.style.display = 'none';
     syncLocalBtn.style.display = 'none';
-    statusDiv.innerHTML = `<span style="color: var(--text-muted);">Not connected to any company workspace. Operating in local standalone mode.</span>`;
+    activeBadge.style.display = 'none';
   }
   document.getElementById('companyModal').classList.add('active');
 }
@@ -1583,100 +1574,133 @@ function closeCompanyModal() {
   document.getElementById('companyModal').classList.remove('active');
 }
 
-function setupFirebaseSync() {
-  if (typeof firebase === 'undefined') {
-    console.warn('Firebase SDK not loaded.');
-    return;
-  }
-
-  try {
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
-    }
-    firestoreDb = firebase.firestore();
-
-    const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
-    const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
-
-    if (firestoreUnsubscribe) firestoreUnsubscribe();
-
-    firestoreUnsubscribe = collectionRef.onSnapshot(async (snapshot) => {
-      isSyncingFromCloud = true;
-      const cloudVehicles = [];
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        data.id = Number(doc.id) || doc.id;
-        cloudVehicles.push(data);
-      });
-
-      if (cloudVehicles.length > 0) {
-        for (const cv of cloudVehicles) {
-          await db.saveVehicle(cv);
-        }
-        await loadVehicles();
-      }
-      isSyncingFromCloud = false;
-    }, (err) => {
-      console.error('Company Sync Error:', err);
+function copySyncKey() {
+  if (currentSyncKey) {
+    navigator.clipboard.writeText(currentSyncKey).then(() => {
+      alert('📋 Workspace Sync Key copied to clipboard!\n\nShare this key with staff members so they can join this workspace.');
+    }).catch(() => {
+      prompt('Copy your Workspace Sync Key:', currentSyncKey);
     });
-  } catch (err) {
-    console.error('Firebase Setup Failed:', err);
   }
 }
 
 async function handleCompanyFormSubmit(e) {
   e.preventDefault();
-  const code = document.getElementById('companyCodeInput').value.trim().toUpperCase();
-  const pin = document.getElementById('companyPinInput').value.trim();
+  const companyName = document.getElementById('companyCodeInput').value.trim();
+  let syncKey = document.getElementById('syncKeyInput').value.trim();
 
-  if (!code || !pin) {
-    alert('Please enter both Company Code and Security PIN.');
+  if (!companyName) {
+    alert('Please enter a Company Name / Fleet Title.');
     return;
   }
 
-  currentCompanyCode = code;
-  currentCompanyPin = pin;
-  localStorage.setItem('vehicleex_company_code', code);
-  localStorage.setItem('vehicleex_company_pin', pin);
+  try {
+    if (syncKey) {
+      // Connect to existing workspace by key
+      const res = await fetch(`https://api.restful-api.dev/objects?id=${syncKey}`);
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length === 0) {
+        alert('⚠️ Invalid Workspace Sync Key. Please check the key and try again.');
+        return;
+      }
+      currentSyncKey = syncKey;
+      currentCompanyName = companyName;
+    } else {
+      // Create new company workspace
+      const allLocalVehicles = await db.getAllVehicles();
+      const res = await fetch('https://api.restful-api.dev/objects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `COMPANY_${companyName.toUpperCase().replace(/\s+/g, '_')}`,
+          data: { vehicles: allLocalVehicles }
+        })
+      });
+      const createdObj = await res.json();
+      if (!createdObj || !createdObj.id) {
+        alert('⚠️ Could not create Cloud Workspace. Please check your internet connection.');
+        return;
+      }
+      currentSyncKey = createdObj.id;
+      currentCompanyName = companyName;
+    }
 
-  updateCompanyHeaderBadge();
-  setupFirebaseSync();
-  closeCompanyModal();
+    localStorage.setItem('vehicleex_company_name', currentCompanyName);
+    localStorage.setItem('vehicleex_sync_key', currentSyncKey);
 
-  alert(`✅ Successfully connected to Company Workspace: ${code}!\n\nAll staff members using this Code & PIN will sync vehicle records in real-time.`);
+    updateCompanyHeaderBadge();
+    startCloudPolling();
+    closeCompanyModal();
+
+    alert(`✅ Connected to Workspace: ${currentCompanyName}!\n\nSync Key: ${currentSyncKey}\n\nAll staff members using this Sync Key will receive real-time updates.`);
+  } catch (err) {
+    console.error('Company Connection Error:', err);
+    alert('⚠️ Connection Error: ' + err.message);
+  }
+}
+
+function startCloudPolling() {
+  if (syncPollInterval) clearInterval(syncPollInterval);
+  fetchLatestCloudVehicles();
+  syncPollInterval = setInterval(fetchLatestCloudVehicles, 3000);
+}
+
+async function fetchLatestCloudVehicles() {
+  if (!currentSyncKey || isSyncingFromCloud) return;
+  try {
+    const res = await fetch(`https://api.restful-api.dev/objects?id=${currentSyncKey}`);
+    const data = await res.json();
+    if (Array.isArray(data) && data.length > 0 && data[0].data && data[0].data.vehicles) {
+      const cloudVehicles = data[0].data.vehicles;
+      isSyncingFromCloud = true;
+
+      // Sync into local IndexedDB
+      await db.clearAll();
+      for (const cv of cloudVehicles) {
+        await db.saveVehicle(cv);
+      }
+      await loadVehicles();
+
+      isSyncingFromCloud = false;
+    }
+  } catch (err) {
+    console.warn('Sync Fetch Notice:', err.message);
+  }
+}
+
+async function pushCurrentVehiclesToCloud() {
+  if (!currentSyncKey || isSyncingFromCloud) return;
+  try {
+    const allVehicles = await db.getAllVehicles();
+    await fetch(`https://api.restful-api.dev/objects/${currentSyncKey}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: `COMPANY_${(currentCompanyName || 'WORKSPACE').toUpperCase().replace(/\s+/g, '_')}`,
+        data: { vehicles: allVehicles }
+      })
+    });
+  } catch (err) {
+    console.error('Cloud Push Error:', err.message);
+  }
 }
 
 async function syncLocalVehiclesToCompany() {
-  if (!currentCompanyCode || !currentCompanyPin || !firestoreDb) {
+  if (!currentSyncKey) {
     alert('Please connect to a Company Workspace first.');
     return;
   }
-
-  const allVehicles = await db.getAllVehicles();
-  if (allVehicles.length === 0) {
-    alert('No local vehicles found to upload.');
-    return;
-  }
-
-  const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
-  const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
-
-  let uploadedCount = 0;
-  for (const v of allVehicles) {
-    await collectionRef.doc(String(v.id)).set(v, { merge: true });
-    uploadedCount++;
-  }
-
-  alert(`✅ Uploaded ${uploadedCount} vehicle records to Company Workspace (${currentCompanyCode})!`);
+  await pushCurrentVehiclesToCloud();
+  alert(`✅ Local vehicles successfully pushed to Cloud Workspace (${currentCompanyName})!`);
 }
 
 function leaveCompanyWorkspace() {
-  if (confirm('Disconnect from Company Workspace? You will return to standalone local storage.')) {
-    if (firestoreUnsubscribe) firestoreUnsubscribe();
-    currentCompanyCode = '';
-    currentCompanyPin = '';
-    localStorage.removeItem('vehicleex_company_code');
-    localStorage.removeItem('vehicleex_company_pin');
+  if (confirm('Disconnect from Company Workspace? You will return to standalone local storage mode.')) {
+    if (syncPollInterval) clearInterval(syncPollInterval);
+    currentCompanyName = '';
+    currentSyncKey = '';
+    localStorage.removeItem('vehicleex_company_name');
+    localStorage.removeItem('vehicleex_sync_key');
     updateCompanyHeaderBadge();
     closeCompanyModal();
     alert('Disconnected from Company Workspace.');
@@ -1684,23 +1708,11 @@ function leaveCompanyWorkspace() {
 }
 
 async function syncVehicleToCloud(vehicle) {
-  if (!currentCompanyCode || !currentCompanyPin || !firestoreDb || isSyncingFromCloud) return;
-  try {
-    const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
-    const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
-    await collectionRef.doc(String(vehicle.id)).set(vehicle, { merge: true });
-  } catch (err) {
-    console.error('Cloud Push Error:', err);
-  }
+  if (!currentSyncKey || isSyncingFromCloud) return;
+  await pushCurrentVehiclesToCloud();
 }
 
 async function deleteVehicleFromCloud(id) {
-  if (!currentCompanyCode || !currentCompanyPin || !firestoreDb || isSyncingFromCloud) return;
-  try {
-    const channelKey = `${currentCompanyCode.trim().toUpperCase()}_${currentCompanyPin.trim()}`;
-    const collectionRef = firestoreDb.collection('companies').doc(channelKey).collection('vehicles');
-    await collectionRef.doc(String(id)).delete();
-  } catch (err) {
-    console.error('Cloud Delete Error:', err);
-  }
+  if (!currentSyncKey || isSyncingFromCloud) return;
+  await pushCurrentVehiclesToCloud();
 }
