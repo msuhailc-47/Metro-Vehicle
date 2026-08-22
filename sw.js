@@ -1,5 +1,5 @@
-// Service Worker v4 - Cache bust & touch fix update
-const CACHE_NAME = 'vehicle-ex-v4';
+// Service Worker v5 - PWA fullscreen + manifest fix
+const CACHE_NAME = 'vehicle-ex-v5';
 const ASSETS = [
   './',
   './index.html',
