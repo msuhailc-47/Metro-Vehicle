@@ -55,7 +55,7 @@ class VehicleDB {
     });
   }
 
-  async saveVehicle(vehicle) {
+  async saveVehicle(vehicle, skipCloudSync = false) {
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction('vehicles', 'readwrite');
       const store = tx.objectStore('vehicles');
@@ -68,7 +68,7 @@ class VehicleDB {
       }
       request.onsuccess = (e) => {
         if (!vehicle.id) vehicle.id = e.target.result;
-        syncVehicleToCloud(vehicle);
+        if (!skipCloudSync) syncVehicleToCloud(vehicle);
         resolve(e.target.result);
       };
       request.onerror = () => reject(request.error);
@@ -1654,10 +1654,10 @@ async function fetchLatestCloudVehicles() {
       const cloudVehicles = data[0].data.vehicles;
       isSyncingFromCloud = true;
 
-      // Sync into local IndexedDB
+      // Sync into local IndexedDB while preserving local file attachments if any
       await db.clearAll();
       for (const cv of cloudVehicles) {
-        await db.saveVehicle(cv);
+        await db.saveVehicle(cv, true); // pass true to skip re-triggering syncVehicleToCloud
       }
       await loadVehicles();
 
@@ -1665,6 +1665,7 @@ async function fetchLatestCloudVehicles() {
     }
   } catch (err) {
     console.warn('Sync Fetch Notice:', err.message);
+    isSyncingFromCloud = false;
   }
 }
 
@@ -1672,12 +1673,28 @@ async function pushCurrentVehiclesToCloud() {
   if (!currentSyncKey || isSyncingFromCloud) return;
   try {
     const allVehicles = await db.getAllVehicles();
+    
+    // Create lightweight copy stripped of huge base64 data for ultra-fast sync
+    const lightVehicles = allVehicles.map(v => {
+      const light = { ...v };
+      if (light.files && Array.isArray(light.files)) {
+        light.files = light.files.map(f => ({
+          id: f.id,
+          name: f.name,
+          type: f.type,
+          size: f.size,
+          category: f.category
+        }));
+      }
+      return light;
+    });
+
     await fetch(`https://api.restful-api.dev/objects/${currentSyncKey}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: `COMPANY_${(currentCompanyName || 'WORKSPACE').toUpperCase().replace(/\s+/g, '_')}`,
-        data: { vehicles: allVehicles }
+        data: { vehicles: lightVehicles }
       })
     });
   } catch (err) {
