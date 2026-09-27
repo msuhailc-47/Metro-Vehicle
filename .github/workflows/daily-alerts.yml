@@ -1,0 +1,27 @@
+name: Daily Vehicle Expiry Alerts (Telegram & WhatsApp)
+
+on:
+  schedule:
+    # 02:30 UTC = 08:00 AM IST (Indian Standard Time) every morning
+    - cron: '30 2 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime!
+
+jobs:
+  send-alerts:
+    name: Check Expiries & Send Alerts (Telegram / WhatsApp)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Multi-Channel Alert Runner
+        run: node scripts/send-daily-alerts.js
+        env:
+          # Optional: specify comma-separated keys (e.g. MMM-1407) or leave blank to scan all registered workspaces
+          WORKSPACE_KEYS: ${{ secrets.WORKSPACE_KEYS }}

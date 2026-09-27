@@ -75,13 +75,15 @@ class VehicleDB {
     });
   }
 
-  async deleteVehicle(id) {
+  async deleteVehicle(id, skipCloudSync = false) {
     return new Promise((resolve, reject) => {
       const tx = this.db.transaction('vehicles', 'readwrite');
       const store = tx.objectStore('vehicles');
       const request = store.delete(Number(id));
       request.onsuccess = () => {
-        deleteVehicleFromCloud(id);
+        if (!skipCloudSync && !isSyncingFromCloud) {
+          deleteVehicleFromCloud(id);
+        }
         resolve(true);
       };
       request.onerror = () => reject(request.error);
@@ -108,6 +110,59 @@ let currentDocManagerVehicleId = null;
 let tempAttachedFiles = [];
 let cameraStream = null;
 let cameraFacingMode = 'environment';
+let currentViewMode = localStorage.getItem('vehicleex_view_mode') || 'card';
+
+// Cloudinary Media Configuration
+const CLOUDINARY_CONFIG = {
+  cloudName: 'pknpbpzr',
+  uploadPreset: 'photos'
+};
+
+// Direct Cloudinary Upload function with instant pre-compression & timeout
+async function uploadToCloudinary(fileOrBase64) {
+  let payload = fileOrBase64;
+  // If it's a raw File / Blob from camera or device (often 5MB-10MB), compress to ~90KB first!
+  if (fileOrBase64 instanceof File || fileOrBase64 instanceof Blob) {
+    try {
+      payload = await fileToBase64(fileOrBase64);
+    } catch (e) {
+      console.warn('Compression notice, fallback to original:', e);
+      payload = fileOrBase64;
+    }
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+  try {
+    const formData = new FormData();
+    formData.append('file', payload);
+    formData.append('upload_preset', CLOUDINARY_CONFIG.uploadPreset);
+
+    const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CONFIG.cloudName}/auto/upload`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || 'Cloudinary upload failed');
+    }
+
+    const data = await res.json();
+    return {
+      url: data.secure_url,
+      publicId: data.public_id,
+      bytes: data.bytes
+    };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    throw err;
+  }
+}
 
 // Document Field Definitions
 const DOC_FIELDS = [
@@ -124,13 +179,43 @@ const DOC_FIELDS = [
 document.addEventListener('DOMContentLoaded', async () => {
   try {
     await db.init();
+  } catch (dbErr) {
+    console.error('IndexedDB init error:', dbErr);
+  }
+
+  registerServiceWorker();
+
+  try {
     await loadVehicles();
+  } catch (loadErr) {
+    console.error('Load vehicles error:', loadErr);
+  }
+
+  try {
     setupEventListeners();
+  } catch (elErr) {
+    console.error('Event listeners setup error:', elErr);
+  }
+
+  try {
     setupNotifications();
-    registerServiceWorker();
+  } catch (notifErr) {
+    console.error('Notification setup error:', notifErr);
+  }
+
+  try {
     initCompanySync();
-  } catch (err) {
-    console.error('App init failed:', err);
+  } catch (syncErr) {
+    console.error('Company sync init error:', syncErr);
+  }
+});
+
+// Automatically re-sync and restore realtime stream when device regains network
+window.addEventListener('online', () => {
+  console.log('🌐 Network connection restored. Syncing with cloud...');
+  if (currentSyncKey) {
+    fetchLatestCloudVehicles();
+    listenToFirebaseWorkspace();
   }
 });
 
@@ -145,15 +230,62 @@ async function loadVehicles() {
 // Register Service Worker
 function registerServiceWorker() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration failed:', err));
+    navigator.serviceWorker.register('sw.js').catch(err => console.log('SW registration notice:', err));
   }
 }
 
-// Request Notification Permissions
+// Request Notification Permissions Safely
 function setupNotifications() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+  try {
+    if ('Notification' in window && Notification.permission === 'default') {
+      const p = Notification.requestPermission();
+      if (p && typeof p.then === 'function') {
+        p.catch(() => {});
+      }
+    }
+  } catch (e) {
+    console.warn('Notification permission request notice:', e);
   }
+}
+
+// Cross-Platform Notification Helper (Works safely on Android Chrome and Desktop)
+async function triggerSystemNotification(title, options) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+    // 1. Android Chrome / PWA standard: use ServiceWorker registration
+    if ('serviceWorker' in navigator) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg && typeof reg.showNotification === 'function') {
+          await reg.showNotification(title, options);
+          return;
+        }
+      } catch (swErr) {
+        console.warn('SW notification fallback:', swErr);
+      }
+    }
+
+    // 2. Desktop browser fallback where 'new Notification' is allowed
+    try {
+      new Notification(title, options);
+    } catch (desktopErr) {
+      console.warn('Desktop Notification constructor notice:', desktopErr);
+    }
+  } catch (err) {
+    console.warn('Notification display suppressed safely:', err);
+  }
+}
+
+// HTML Sanitization helper against XSS
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 // ==================== EXPIRY COMPUTATION ====================
@@ -161,14 +293,20 @@ function getDocStatus(dateStr) {
   if (!dateStr) return { status: 'none', label: '-', badgeClass: '' };
   
   const now = new Date();
+  const nowMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const target = new Date(dateStr);
-  const diffTime = target - now;
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  if (isNaN(target.getTime())) return { status: 'none', label: '-', badgeClass: '' };
 
-  if (now >= target) {
-    return { status: 'expired', label: `Expired (${Math.abs(diffDays)}d ago)`, badgeClass: 'expired' };
+  const targetMidnight = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+  const diffDays = Math.ceil((targetMidnight - nowMidnight) / (1000 * 60 * 60 * 24));
+
+  if (diffDays < 0) {
+    const daysAgo = Math.abs(diffDays);
+    return { status: 'expired', label: `Expired ${daysAgo}d ago`, badgeClass: 'expired' };
+  } else if (diffDays === 0) {
+    return { status: 'expired', label: `Expired Today`, badgeClass: 'expired' };
   } else if (diffDays <= 10) {
-    return { status: 'expiring-critical', label: `Expires in ${diffDays}d`, badgeClass: 'expiring-critical' };
+    return { status: 'expiring-critical', label: diffDays === 1 ? 'Expires Tomorrow' : `Expires in ${diffDays}d`, badgeClass: 'expiring-critical' };
   } else if (diffDays <= 30) {
     return { status: 'expiring', label: `Expires in ${diffDays}d`, badgeClass: 'expiring' };
   } else {
@@ -206,31 +344,97 @@ function renderDashboardStats() {
   let validCount = 0;
 
   vehicles.forEach(v => {
-    let status = getOverallVehicleStatus(v);
-    if (status === 'expired') expiredCount++;
-    else if (status === 'expiring' || status === 'expiring-critical') expiringCount++;
-    else validCount++;
+    let hasExpired = false;
+    let hasExpiring = false;
+
+    DOC_FIELDS.forEach(f => {
+      if (!f.isExpiry) return;
+      const val = v[f.key];
+      if (val) {
+        const st = getDocStatus(val).status;
+        if (st === 'expired') hasExpired = true;
+        if (st === 'expiring' || st === 'expiring-critical') hasExpiring = true;
+      }
+    });
+
+    if (hasExpired) expiredCount++;
+    if (hasExpiring) expiringCount++;
+    if (!hasExpired && !hasExpiring) validCount++;
   });
 
-  document.getElementById('statTotal').innerText = total;
-  document.getElementById('statExpired').innerText = expiredCount;
-  document.getElementById('statExpiring').innerText = expiringCount;
-  document.getElementById('statValid').innerText = validCount;
+  const totalEl = document.getElementById('statTotal');
+  const expEl = document.getElementById('statExpired');
+  const soonEl = document.getElementById('statExpiring');
+  const valEl = document.getElementById('statValid');
+
+  if (totalEl) totalEl.innerText = total;
+  if (expEl) expEl.innerText = expiredCount;
+  if (soonEl) soonEl.innerText = expiringCount;
+  if (valEl) valEl.innerText = validCount;
 }
 
-// ==================== RENDER VEHICLE CARDS ====================
+function setFilter(filterType) {
+  activeFilter = filterType;
+  document.querySelectorAll('.filter-pills .pill-btn').forEach(b => {
+    if (b.getAttribute('data-filter') === filterType) {
+      b.classList.add('active');
+    } else {
+      b.classList.remove('active');
+    }
+  });
+  renderVehiclesList();
+}
+
+// ==================== RENDER VEHICLE CARDS & TABLE VIEW ====================
+function toggleViewMode() {
+  currentViewMode = currentViewMode === 'card' ? 'table' : 'card';
+  localStorage.setItem('vehicleex_view_mode', currentViewMode);
+  updateViewToggleButton();
+  renderVehiclesList();
+}
+
+function updateViewToggleButton() {
+  const btn = document.getElementById('viewToggleBtn');
+  if (btn) {
+    btn.innerHTML = currentViewMode === 'card' ? '📋 Table View' : '🔲 Card View';
+    btn.title = currentViewMode === 'card' ? 'Switch to Table View' : 'Switch to Card View';
+  }
+}
+
 function renderVehiclesList() {
   const container = document.getElementById('vehiclesGrid');
   const searchVal = document.getElementById('searchInput').value.trim().toLowerCase();
+  updateViewToggleButton();
 
   const filtered = vehicles.filter(v => {
-    // Filter by tab
-    const overallStatus = getOverallVehicleStatus(v);
-    if (activeFilter !== 'all' && overallStatus !== activeFilter) return false;
+    // 1. Filter by tab
+    if (activeFilter === 'expired') {
+      let hasExpired = false;
+      DOC_FIELDS.forEach(f => {
+        if (!f.isExpiry) return;
+        const val = v[f.key];
+        if (val && getDocStatus(val).status === 'expired') hasExpired = true;
+      });
+      if (!hasExpired) return false;
+    } else if (activeFilter === 'expiring') {
+      let hasExpiring = false;
+      DOC_FIELDS.forEach(f => {
+        if (!f.isExpiry) return;
+        const val = v[f.key];
+        if (val) {
+          const st = getDocStatus(val).status;
+          if (st === 'expiring' || st === 'expiring-critical') hasExpiring = true;
+        }
+      });
+      if (!hasExpiring) return false;
+    } else if (activeFilter === 'valid') {
+      const overallStatus = getOverallVehicleStatus(v);
+      if (overallStatus !== 'valid') return false;
+    }
 
-    // Filter by search
+    // 2. Filter by search
     if (searchVal) {
-      const noMatch = v.vehicleNo.toLowerCase().includes(searchVal);
+      const noMatch = (v.vehicleNo || '').toLowerCase().includes(searchVal);
       const gpsMatch = (v.gps || '').toLowerCase().includes(searchVal);
       return noMatch || gpsMatch;
     }
@@ -249,6 +453,94 @@ function renderVehiclesList() {
     return;
   }
 
+  // If Table View is selected
+  if (currentViewMode === 'table') {
+    container.style.display = 'block';
+    let tblHtml = `
+      <div class="table-responsive-wrapper">
+        <div class="table-scroll-hint">
+          <span>👉 Swipe horizontally to view all documents & actions</span>
+        </div>
+        <table class="vehicles-data-table">
+          <thead>
+            <tr>
+              <th class="sticky-col">Vehicle No</th>
+              <th>Fitness</th>
+              <th>Insurance</th>
+              <th>Tax</th>
+              <th>Permit</th>
+              <th>PUCC</th>
+              <th>Docs</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    filtered.forEach(v => {
+      const overallStatus = getOverallVehicleStatus(v);
+      let overallBadge = '';
+      if (overallStatus === 'expired') overallBadge = '<span class="status-badge expired">🔴 Expired</span>';
+      else if (overallStatus === 'expiring-critical') overallBadge = '<span class="status-badge expiring-critical">🟠 Exp. 10d</span>';
+      else if (overallStatus === 'expiring') overallBadge = '<span class="status-badge expiring">🟡 Expiring</span>';
+      else overallBadge = '<span class="status-badge valid">🟢 Valid</span>';
+
+      const attachedFilesCount = (v.files && v.files.length) || 0;
+
+      function renderTableCell(key) {
+        const val = v[key];
+        if (!val) return '<span style="color: var(--text-muted);">-</span>';
+        const st = getDocStatus(val);
+        const d = new Date(val);
+        const dStr = isNaN(d.getTime()) ? val : d.toLocaleDateString([], { month: 'short', day: 'numeric', year: '2-digit' });
+        let badge = '';
+        if (st.status === 'expired') badge = '<span class="status-badge expired" style="padding:0.1rem 0.35rem; font-size:0.65rem;">🔴 Exp</span>';
+        else if (st.status === 'expiring-critical') badge = '<span class="status-badge expiring-critical" style="padding:0.1rem 0.35rem; font-size:0.65rem;">🟠 10d</span>';
+        else if (st.status === 'expiring') badge = '<span class="status-badge expiring" style="padding:0.1rem 0.35rem; font-size:0.65rem;">🟡 Soon</span>';
+        else badge = '<span class="status-badge valid" style="padding:0.1rem 0.35rem; font-size:0.65rem;">🟢</span>';
+
+        return `<div class="tbl-date-cell"><span class="tbl-date-val">${dStr}</span>${badge}</div>`;
+      }
+
+      tblHtml += `
+        <tr>
+          <td class="sticky-col">
+            <div class="tbl-vnum">${escapeHtml(v.vehicleNo || 'Vehicle')}</div>
+            <div style="margin-top: 4px;">${overallBadge}</div>
+            ${v.gps ? `<small style="color: var(--text-muted); display: block; margin-top: 2px; font-size: 0.72rem;">${escapeHtml(v.gps)}</small>` : ''}
+          </td>
+          <td>${renderTableCell('fitnessUpto')}</td>
+          <td>${renderTableCell('insuranceUpto')}</td>
+          <td>${renderTableCell('taxUpto')}</td>
+          <td>${renderTableCell('permitUpto')}</td>
+          <td>${renderTableCell('pucc')}</td>
+          <td>
+            <button class="secondary-btn" onclick="openDocManagerModal(${v.id})" style="padding: 0.35rem 0.65rem; font-size: 0.8rem;">
+              📁 ${attachedFilesCount}
+            </button>
+          </td>
+          <td>
+            <div class="tbl-actions">
+              <button onclick="duplicateVehicle(${v.id})" title="Duplicate record to new vehicle">📑 Copy</button>
+              <button onclick="editVehicle(${v.id})" title="Edit">✏️ Edit</button>
+              <button class="btn-del" onclick="deleteVehicleRecord(${v.id})" title="Delete">🗑️</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    });
+
+    tblHtml += `
+          </tbody>
+        </table>
+      </div>
+    `;
+    container.innerHTML = tblHtml;
+    return;
+  }
+
+  // Otherwise, render Card View (with prominent, large dates!)
+  container.style.display = 'grid';
   let html = '';
   filtered.forEach(v => {
     const overallStatus = getOverallVehicleStatus(v);
@@ -265,13 +557,13 @@ function renderVehiclesList() {
         <div>
           <div class="v-header">
             <div>
-              <div class="v-number">${v.vehicleNo}</div>
+              <div class="v-number">${escapeHtml(v.vehicleNo)}</div>
             </div>
             ${overallBadge}
           </div>
 
-          <div class="doc-status-grid">
-    `;
+          <div class="doc-chips-grid">
+      `;
 
     DOC_FIELDS.forEach(f => {
       const val = v[f.key];
@@ -282,12 +574,17 @@ function renderVehiclesList() {
         dateDisplay = d.toLocaleDateString([], { month: 'short', day: 'numeric', year: '2-digit' });
       }
 
+      let chipClass = 'doc-chip';
+      if (f.isExpiry && st.status === 'expired') chipClass += ' chip-expired';
+      else if (f.isExpiry && st.status === 'expiring-critical') chipClass += ' chip-critical';
+      else if (f.isExpiry && st.status === 'expiring') chipClass += ' chip-expiring';
+
       html += `
-        <div class="doc-chip">
+        <div class="${chipClass}">
           <span class="doc-label">${f.label}</span>
           <span class="doc-val">
-            ${dateDisplay}
-            ${(f.isExpiry && st.badgeClass) ? `<span class="status-badge ${st.badgeClass}" style="padding: 0.1rem 0.4rem; font-size: 0.65rem;">${st.status === 'expired' ? '🔴' : st.status === 'expiring-critical' ? '🟠' : st.status === 'expiring' ? '🟡' : '🟢'}</span>` : ''}
+            <span>${dateDisplay}</span>
+            ${(f.isExpiry && st.badgeClass) ? `<span class="status-badge ${st.badgeClass}" style="padding: 0.15rem 0.5rem; font-size: 0.68rem;">${st.status === 'expired' ? '🔴 Expired' : st.status === 'expiring-critical' ? '🟠 10d' : st.status === 'expiring' ? '🟡 Soon' : '🟢 Valid'}</span>` : ''}
           </span>
         </div>
       `;
@@ -296,12 +593,15 @@ function renderVehiclesList() {
     html += `
           </div>
           
-          ${v.gps ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;"><strong>GPS/Info:</strong> ${v.gps}</div>` : ''}
+          ${v.gps ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;"><strong>GPS/Info:</strong> ${escapeHtml(v.gps)}</div>` : ''}
         </div>
 
         <div class="v-actions">
           <button onclick="openDocManagerModal(${v.id})" title="Manage Documents">
             📁 Docs (${attachedFilesCount})
+          </button>
+          <button onclick="duplicateVehicle(${v.id})" title="Duplicate record to new vehicle">
+            📑 Copy
           </button>
           <button onclick="editVehicle(${v.id})" title="Edit Record">
             ✏️ Edit
@@ -365,14 +665,18 @@ function checkAndTriggerExpirations() {
   window.activeNotifications = notifList;
 
   // Trigger system notification if newly expired
-  if (notifList.length > 0 && 'Notification' in window && Notification.permission === 'granted') {
-    const expiredItems = notifList.filter(n => n.status === 'expired');
-    if (expiredItems.length > 0) {
-      new Notification('🚨 Vehicle Document Expired!', {
-        body: expiredItems.map(i => i.message).slice(0, 3).join('\n'),
-        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="%23ef4444"/></svg>'
-      });
+  try {
+    if (notifList.length > 0 && 'Notification' in window && Notification.permission === 'granted') {
+      const expiredItems = notifList.filter(n => n.status === 'expired');
+      if (expiredItems.length > 0) {
+        triggerSystemNotification('🚨 Vehicle Document Expired!', {
+          body: expiredItems.map(i => i.message).slice(0, 3).join('\n'),
+          icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="%23ef4444"/></svg>'
+        });
+      }
     }
+  } catch (e) {
+    console.warn('Notification trigger notice:', e);
   }
 }
 
@@ -484,11 +788,17 @@ function setupEventListeners() {
   document.getElementById('notifBellBtn').addEventListener('click', openNotifModal);
 
   // Export / Import Database JSON
-  document.getElementById('exportDbBtn').addEventListener('click', exportDatabaseJson);
-  document.getElementById('importDbBtn').addEventListener('click', () => {
-    document.getElementById('importDbInput').click();
-  });
-  document.getElementById('importDbInput').addEventListener('change', importDatabaseJson);
+  const exportDbBtn = document.getElementById('exportDbBtn');
+  if (exportDbBtn) exportDbBtn.addEventListener('click', exportDatabaseJson);
+  const importDbBtn = document.getElementById('importDbBtn');
+  if (importDbBtn) {
+    importDbBtn.addEventListener('click', () => {
+      const input = document.getElementById('importDbInput');
+      if (input) input.click();
+    });
+  }
+  const importDbInput = document.getElementById('importDbInput');
+  if (importDbInput) importDbInput.addEventListener('change', importDatabaseJson);
 
   // Export CSV
   document.getElementById('exportCsvBtn').addEventListener('click', exportVehiclesCsv);
@@ -507,6 +817,74 @@ function setupEventListeners() {
 }
 
 // ==================== VEHICLE CRUD ACTIONS ====================
+
+function toDateInputValue(val) {
+  if (!val) return '';
+  return String(val).trim().split('T')[0];
+}
+
+function formatExpiryDateWithDefaultTime(val) {
+  if (!val) return '';
+  const dateOnly = String(val).trim().split('T')[0];
+  if (!dateOnly) return '';
+  return `${dateOnly}T08:00`;
+}
+
+function setQuickDate(inputId, type) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+
+  const now = new Date();
+  let d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  if (type === 'today') {
+    // today
+  } else if (type === '+6m') {
+    d.setMonth(d.getMonth() + 6);
+  } else if (type === '+1y') {
+    d.setFullYear(d.getFullYear() + 1);
+  } else if (type === '+2y') {
+    d.setFullYear(d.getFullYear() + 2);
+  } else if (type === '+5y') {
+    d.setFullYear(d.getFullYear() + 5);
+  } else if (type === '+15y') {
+    d.setFullYear(d.getFullYear() + 15);
+  } else if (type === 'quarter') {
+    const y = now.getFullYear();
+    const m = now.getMonth();
+    if (m < 2 || (m === 2 && now.getDate() < 31)) {
+      d = new Date(y, 2, 31);
+    } else if (m < 5 || (m === 5 && now.getDate() < 30)) {
+      d = new Date(y, 5, 30);
+    } else if (m < 8 || (m === 8 && now.getDate() < 30)) {
+      d = new Date(y, 8, 30);
+    } else if (m < 11 || (m === 11 && now.getDate() < 31)) {
+      d = new Date(y, 11, 31);
+    } else {
+      d = new Date(y + 1, 2, 31);
+    }
+  }
+
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  input.value = `${yyyy}-${mm}-${dd}`;
+
+  input.classList.add('input-highlight-flash');
+  setTimeout(() => input.classList.remove('input-highlight-flash'), 400);
+}
+
+function duplicateVehicle(id) {
+  const v = vehicles.find(item => item.id === Number(id));
+  if (!v) return;
+  openVehicleModal({
+    ...v,
+    id: null,
+    isClone: true,
+    vehicleNo: ''
+  });
+}
+
 function openVehicleModal(vehicleToEdit = null) {
   tempAttachedFiles = [];
   const form = document.getElementById('vehicleForm');
@@ -514,15 +892,15 @@ function openVehicleModal(vehicleToEdit = null) {
 
   if (vehicleToEdit) {
     currentEditingVehicleId = vehicleToEdit.id;
-    document.getElementById('vehicleModalTitle').innerText = 'Edit Vehicle Record';
-    document.getElementById('vehicleNo').value = vehicleToEdit.vehicleNo;
-    document.getElementById('regDate').value = vehicleToEdit.regDate || '';
-    document.getElementById('fitnessUpto').value = vehicleToEdit.fitnessUpto || '';
-    document.getElementById('insuranceUpto').value = vehicleToEdit.insuranceUpto || '';
-    document.getElementById('taxUpto').value = vehicleToEdit.taxUpto || '';
-    document.getElementById('permitUpto').value = vehicleToEdit.permitUpto || '';
-    document.getElementById('nationalPermit').value = vehicleToEdit.nationalPermit || '';
-    document.getElementById('pucc').value = vehicleToEdit.pucc || '';
+    document.getElementById('vehicleModalTitle').innerText = vehicleToEdit.isClone ? 'Duplicate Record to New Vehicle' : 'Edit Vehicle Record';
+    document.getElementById('vehicleNo').value = vehicleToEdit.vehicleNo || '';
+    document.getElementById('regDate').value = toDateInputValue(vehicleToEdit.regDate);
+    document.getElementById('fitnessUpto').value = toDateInputValue(vehicleToEdit.fitnessUpto);
+    document.getElementById('insuranceUpto').value = toDateInputValue(vehicleToEdit.insuranceUpto);
+    document.getElementById('taxUpto').value = toDateInputValue(vehicleToEdit.taxUpto);
+    document.getElementById('permitUpto').value = toDateInputValue(vehicleToEdit.permitUpto);
+    document.getElementById('nationalPermit').value = toDateInputValue(vehicleToEdit.nationalPermit);
+    document.getElementById('pucc').value = toDateInputValue(vehicleToEdit.pucc);
     document.getElementById('gps').value = vehicleToEdit.gps || '';
     tempAttachedFiles = vehicleToEdit.files ? [...vehicleToEdit.files] : [];
   } else {
@@ -533,6 +911,7 @@ function openVehicleModal(vehicleToEdit = null) {
   updateFormFileCountText();
   renderFormAttachedPreview();
   document.getElementById('vehicleModal').classList.add('active');
+  setTimeout(() => document.getElementById('vehicleNo')?.focus(), 150);
 }
 
 function closeVehicleModal() {
@@ -565,24 +944,22 @@ async function deleteVehicleRecord(id) {
   }
 }
 
-async function handleVehicleFormSubmit(e) {
-  e.preventDefault();
-
+function collectVehicleFormData() {
   const vehicleNo = document.getElementById('vehicleNo').value.trim().toUpperCase();
   if (!vehicleNo) {
     alert('Please enter a vehicle number.');
-    return;
+    return null;
   }
 
   const vehicleData = {
     vehicleNo,
     regDate: document.getElementById('regDate').value,
-    fitnessUpto: document.getElementById('fitnessUpto').value,
-    insuranceUpto: document.getElementById('insuranceUpto').value,
-    taxUpto: document.getElementById('taxUpto').value,
-    permitUpto: document.getElementById('permitUpto').value,
-    nationalPermit: document.getElementById('nationalPermit').value,
-    pucc: document.getElementById('pucc').value,
+    fitnessUpto: formatExpiryDateWithDefaultTime(document.getElementById('fitnessUpto').value),
+    insuranceUpto: formatExpiryDateWithDefaultTime(document.getElementById('insuranceUpto').value),
+    taxUpto: formatExpiryDateWithDefaultTime(document.getElementById('taxUpto').value),
+    permitUpto: formatExpiryDateWithDefaultTime(document.getElementById('permitUpto').value),
+    nationalPermit: formatExpiryDateWithDefaultTime(document.getElementById('nationalPermit').value),
+    pucc: formatExpiryDateWithDefaultTime(document.getElementById('pucc').value),
     gps: document.getElementById('gps').value.trim(),
     files: tempAttachedFiles
   };
@@ -590,13 +967,50 @@ async function handleVehicleFormSubmit(e) {
   if (currentEditingVehicleId) {
     vehicleData.id = currentEditingVehicleId;
   }
+  return vehicleData;
+}
+
+async function handleVehicleFormSubmit(e) {
+  if (e) e.preventDefault();
+  const vehicleData = collectVehicleFormData();
+  if (!vehicleData) return;
 
   await db.saveVehicle(vehicleData);
+  await pushCurrentVehiclesToCloud();
   closeVehicleModal();
   await loadVehicles();
 }
 
-// File Input Handler (Multi-file Base64 conversion)
+async function handleSaveAndAddNext() {
+  const vehicleData = collectVehicleFormData();
+  if (!vehicleData) return;
+
+  await db.saveVehicle(vehicleData);
+  await pushCurrentVehiclesToCloud();
+  await loadVehicles();
+
+  const savedNo = vehicleData.vehicleNo;
+  document.getElementById('vehicleForm').reset();
+  tempAttachedFiles = [];
+  currentEditingVehicleId = null;
+  updateFormFileCountText();
+  renderFormAttachedPreview();
+
+  const title = document.getElementById('vehicleModalTitle');
+  if (title) {
+    title.innerText = `✅ Saved ${savedNo}! Enter Next Vehicle:`;
+    setTimeout(() => { if (title) title.innerText = 'Add Vehicle Record'; }, 3000);
+  }
+
+  const vInput = document.getElementById('vehicleNo');
+  if (vInput) {
+    vInput.focus();
+    vInput.classList.add('input-highlight-flash');
+    setTimeout(() => vInput.classList.remove('input-highlight-flash'), 500);
+  }
+}
+
+// File Input Handler with Cloudinary Upload
 async function handleFileInputChange(e) {
   const files = e.target.files;
   if (!files || files.length === 0) return;
@@ -607,15 +1021,29 @@ async function handleFileInputChange(e) {
     return;
   }
 
+  const countTxt = document.getElementById('formFileCountText');
+  if (countTxt) {
+    countTxt.innerHTML = '<span style="color: var(--primary); font-weight: 700;">☁️ Uploading photos to Cloudinary... please wait</span>';
+  }
+
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const base64 = await fileToBase64(file);
+    let fileUrl = '';
+    try {
+      const uploadRes = await uploadToCloudinary(file);
+      fileUrl = uploadRes.url;
+    } catch (err) {
+      console.warn('Cloudinary upload fallback to base64:', err);
+      fileUrl = await fileToBase64(file);
+    }
+
     tempAttachedFiles.push({
       id: 'f_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5),
       name: file.name,
       type: file.type,
       category: 'General',
-      data: base64
+      url: fileUrl,
+      data: fileUrl
     });
   }
 
@@ -647,9 +1075,10 @@ function renderFormAttachedPreview() {
 
   let html = '';
   tempAttachedFiles.forEach((f, idx) => {
-    const isImage = (f.type && f.type.startsWith('image/')) || (f.data && f.data.startsWith('data:image/'));
+    const fileSrc = f.url || f.data;
+    const isImage = (f.type && f.type.startsWith('image/')) || (fileSrc && (fileSrc.startsWith('data:image/') || fileSrc.includes('cloudinary.com') || fileSrc.match(/\.(jpg|jpeg|png|webp|gif)/i)));
     const thumbContent = isImage
-      ? `<img src="${f.data}" style="width: 100%; height: 80px; object-fit: cover; border-radius: 6px;">`
+      ? `<img src="${fileSrc}" style="width: 100%; height: 80px; object-fit: cover; border-radius: 6px;">`
       : `<div style="width: 100%; height: 80px; display: flex; align-items: center; justify-content: center; background: var(--bg-main); border-radius: 6px; font-size: 2rem;">📄</div>`;
 
     html += `
@@ -756,7 +1185,7 @@ function switchCameraFacing() {
   startCameraStream();
 }
 
-function captureCameraSnapshot() {
+async function captureCameraSnapshot() {
   const video = document.getElementById('cameraVideo');
   const canvas = document.getElementById('cameraCanvas');
   const ctx = canvas.getContext('2d');
@@ -770,18 +1199,33 @@ function captureCameraSnapshot() {
   const category = document.getElementById('cameraDocCategory').value || 'Captured';
   const fileName = `${category}_Scan_${Date.now()}.jpg`;
 
+  closeCameraModal();
+
+  const countTxt = document.getElementById('formFileCountText');
+  if (countTxt) {
+    countTxt.innerHTML = '<span style="color: var(--primary); font-weight: 700;">☁️ Uploading snapshot to Cloudinary...</span>';
+  }
+
+  let fileUrl = '';
+  try {
+    const uploadRes = await uploadToCloudinary(base64);
+    fileUrl = uploadRes.url;
+  } catch (err) {
+    console.warn('Snapshot Cloudinary fallback to base64:', err);
+    fileUrl = base64;
+  }
+
   tempAttachedFiles.push({
     id: 'f_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
     name: fileName,
     type: 'image/jpeg',
     category: category,
-    data: base64
+    url: fileUrl,
+    data: fileUrl
   });
 
   updateFormFileCountText();
   renderFormAttachedPreview();
-  closeCameraModal();
-  alert(`📸 Snapshot added as ${fileName}`);
 }
 
 // ==================== DOCUMENT MANAGER (ADD/REMOVE/UPDATE/RENAME/PREVIEW) ====================
@@ -797,34 +1241,56 @@ async function openDocManagerModal(vehicleId) {
 
 function closeDocManagerModal() {
   document.getElementById('docManagerModal').classList.remove('active');
+  currentDocManagerVehicleId = null;
   loadVehicles(); // refresh UI
 }
 
 function renderDocList(vehicle) {
   const container = document.getElementById('docListContainer');
   if (!vehicle.files || vehicle.files.length === 0) {
-    container.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 1.5rem;">No documents attached yet.</p>`;
+    container.innerHTML = `<p style="color: var(--text-muted); text-align: center; padding: 2rem 1rem;">No documents attached yet. Use buttons below to add photos.</p>`;
     return;
   }
 
   let html = '';
   vehicle.files.forEach((f, idx) => {
-    const isImage = f.type.startsWith('image/') || f.data.startsWith('data:image/');
-    const icon = isImage ? `<img src="${f.data}" class="doc-thumb">` : `<div class="doc-thumb">📄</div>`;
+    const fileSrc = f.url || f.data;
+    const isImage = (f.type && f.type.startsWith('image/')) || (fileSrc && (fileSrc.startsWith('data:image/') || fileSrc.includes('cloudinary.com') || fileSrc.match(/\.(jpg|jpeg|png|webp|gif)/i)));
+    const thumbHtml = isImage ? `<img src="${fileSrc}" class="doc-thumb" alt="${f.name}">` : `<div class="doc-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.4rem;">📄</div>`;
 
     html += `
       <div class="doc-item-row">
-        ${icon}
-        <div class="doc-details">
-          <div class="doc-name">${f.name}</div>
-          <div class="doc-meta">Category: <strong>${f.category || 'General'}</strong></div>
+        <div class="doc-item-top">
+          <div class="doc-thumb-wrapper" onclick="previewDocFile('${f.id}')" title="Click to view">
+            ${thumbHtml}
+            <div class="doc-thumb-hover-overlay">🔍</div>
+          </div>
+
+          <div class="doc-details">
+            <div class="doc-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div>
+            <span class="doc-meta-badge" onclick="renameDocCategory('${f.id}')" title="Click to change category">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><circle cx="7" cy="7" r="1.5"/></svg>
+              <span>${escapeHtml(f.category || 'Document')}</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="opacity: 0.6;"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+            </span>
+          </div>
         </div>
+
         <div class="doc-item-actions">
-          <button class="icon-btn" onclick="previewDocFile('${f.id}')" title="Preview">👁️</button>
-          <button class="icon-btn" onclick="downloadSingleDoc('${f.id}')" title="Download">📥</button>
-          <button class="icon-btn" onclick="shareDocFile('${f.id}')" title="Share (WhatsApp)">💬</button>
-          <button class="icon-btn" onclick="renameDocCategory('${f.id}')" title="Rename Category">🏷️</button>
-          <button class="icon-btn" onclick="deleteDocFile('${f.id}')" title="Delete">🗑️</button>
+          <button class="doc-action-btn btn-view" onclick="previewDocFile('${f.id}')" title="View Document">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            <span>View</span>
+          </button>
+          <button class="doc-action-btn btn-share" onclick="shareDocFile('${f.id}')" title="Share via WhatsApp">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            <span>Share</span>
+          </button>
+          <button class="doc-action-btn btn-download" onclick="downloadSingleDoc('${f.id}')" title="Download Document">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </button>
+          <button class="doc-action-btn btn-delete" onclick="deleteDocFile('${f.id}')" title="Delete Document">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
         </div>
       </div>
     `;
@@ -847,17 +1313,27 @@ async function handleUploadExtraDoc() {
 
   for (let i = 0; i < input.files.length; i++) {
     const file = input.files[i];
-    const base64 = await fileToBase64(file);
+    let fileUrl = '';
+    try {
+      const uploadRes = await uploadToCloudinary(file);
+      fileUrl = uploadRes.url;
+    } catch (err) {
+      console.warn('Cloudinary upload fallback to base64:', err);
+      fileUrl = await fileToBase64(file);
+    }
+
     vehicle.files.push({
       id: 'f_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
       name: file.name,
       type: file.type,
       category: 'Uploaded',
-      data: base64
+      url: fileUrl,
+      data: fileUrl
     });
   }
 
   await db.saveVehicle(vehicle);
+  await pushCurrentVehiclesToCloud();
   input.value = '';
   renderDocList(vehicle);
 }
@@ -871,19 +1347,45 @@ async function handleExtraFileInputChange(e) {
 
   if (!vehicle.files) vehicle.files = [];
 
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const base64 = await fileToBase64(file);
-    vehicle.files.push({
-      id: 'f_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5),
-      name: file.name,
-      type: file.type,
-      category: 'Document',
-      data: base64
-    });
+  const listContainer = document.getElementById('docListContainer');
+  let noticeEl = document.getElementById('cloudUploadNotice');
+  if (!noticeEl && listContainer) {
+    listContainer.insertAdjacentHTML('afterbegin', '<div id="cloudUploadNotice" class="upload-progress-indicator">⚡ Compressing & uploading to Cloudinary...</div>');
+    noticeEl = document.getElementById('cloudUploadNotice');
   }
 
-  await db.saveVehicle(vehicle);
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (noticeEl) {
+        noticeEl.innerText = `⚡ Uploading photo ${i + 1} of ${files.length}...`;
+      }
+      let fileUrl = '';
+      try {
+        const uploadRes = await uploadToCloudinary(file);
+        fileUrl = uploadRes.url;
+      } catch (err) {
+        console.warn('Cloudinary upload fallback to base64:', err);
+        fileUrl = await fileToBase64(file);
+      }
+
+      vehicle.files.push({
+        id: 'f_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5),
+        name: file.name,
+        type: file.type,
+        category: 'Document',
+        url: fileUrl,
+        data: fileUrl
+      });
+    }
+
+    await db.saveVehicle(vehicle);
+    await pushCurrentVehiclesToCloud();
+  } finally {
+    const notice = document.getElementById('cloudUploadNotice');
+    if (notice) notice.remove();
+  }
+
   e.target.value = '';
   renderDocList(vehicle);
 }
@@ -892,8 +1394,11 @@ async function deleteDocFile(fileId) {
   const vehicle = await db.getVehicle(currentDocManagerVehicleId);
   if (!vehicle) return;
 
-  vehicle.files = vehicle.files.filter(f => f.id !== fileId);
+  if (!confirm('Are you sure you want to delete this document?')) return;
+
+  vehicle.files = (vehicle.files || []).filter(f => f.id !== fileId);
   await db.saveVehicle(vehicle);
+  await pushCurrentVehiclesToCloud();
   renderDocList(vehicle);
 }
 
@@ -908,6 +1413,7 @@ async function renameDocCategory(fileId) {
   if (newCat && newCat.trim() !== '') {
     fileObj.category = newCat.trim();
     await db.saveVehicle(vehicle);
+    await pushCurrentVehiclesToCloud();
     renderDocList(vehicle);
   }
 }
@@ -920,14 +1426,17 @@ async function shareDocFile(fileId) {
   const fileObj = vehicle.files.find(f => f.id === fileId);
   if (!fileObj) return;
 
+  const fileSrc = fileObj.url || fileObj.data;
+
   const downloadFallback = () => {
     const a = document.createElement('a');
-    a.href = fileObj.data;
+    a.href = fileSrc;
     a.download = fileObj.name || `document_${fileId}.jpg`;
+    a.target = '_blank';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    alert("Since direct sharing is not supported on this network (needs HTTPS), the file has been downloaded. You can now share it from your gallery.");
+    alert("Opening or downloading file so you can share it.");
   };
 
   if (!navigator.share) {
@@ -936,8 +1445,7 @@ async function shareDocFile(fileId) {
   }
 
   try {
-    // Convert base64 data to Blob/File object
-    const res = await fetch(fileObj.data);
+    const res = await fetch(fileSrc);
     const blob = await res.blob();
     const file = new File([blob], fileObj.name, { type: fileObj.type || 'image/jpeg' });
 
@@ -950,9 +1458,9 @@ async function shareDocFile(fileId) {
     } else if (navigator.share) {
       await navigator.share({
         title: fileObj.name,
-        text: `Vehicle Document: ${vehicle.vehicleNo} - ${fileObj.category || 'General'}`
+        text: `Vehicle Document: ${vehicle.vehicleNo} - ${fileObj.category || 'General'}: ${fileSrc}`
       });
-      alert("Your browser does not support attaching files directly. We shared the text, but the file will now be downloaded for you to share manually.");
+    } else {
       downloadFallback();
     }
   } catch (error) {
@@ -963,8 +1471,6 @@ async function shareDocFile(fileId) {
   }
 }
 
-
-
 async function previewDocFile(fileId) {
   const vehicle = await db.getVehicle(currentDocManagerVehicleId);
   if (!vehicle) return;
@@ -974,13 +1480,16 @@ async function previewDocFile(fileId) {
 
   const content = document.getElementById('lightboxContent');
   document.getElementById('lightboxTitle').innerText = fileObj.name;
+  const fileSrc = fileObj.url || fileObj.data;
 
-  if (fileObj.type.startsWith('image/') || fileObj.data.startsWith('data:image/')) {
-    content.innerHTML = `<img src="${fileObj.data}" style="max-width: 100%; max-height: 70vh; border-radius: 8px;">`;
-  } else if (fileObj.type === 'application/pdf' || fileObj.data.startsWith('data:application/pdf')) {
-    content.innerHTML = `<iframe src="${fileObj.data}" style="width: 100%; height: 70vh; border: none;"></iframe>`;
+  const isImage = (fileObj.type && fileObj.type.startsWith('image/')) || (fileSrc && (fileSrc.startsWith('data:image/') || fileSrc.includes('cloudinary.com') || fileSrc.match(/\.(jpg|jpeg|png|webp|gif)/i)));
+
+  if (isImage) {
+    content.innerHTML = `<img src="${fileSrc}" style="max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain;">`;
+  } else if ((fileObj.type === 'application/pdf') || (fileSrc && (fileSrc.startsWith('data:application/pdf') || fileSrc.endsWith('.pdf')))) {
+    content.innerHTML = `<iframe src="${fileSrc}" style="width: 100%; height: 70vh; border: none;"></iframe>`;
   } else {
-    content.innerHTML = `<p style="color: #fff;">Preview not available for this file type. Click download instead.</p>`;
+    content.innerHTML = `<div style="text-align: center; color: #fff; padding: 2rem;"><p>Click below to view file:</p><a href="${fileSrc}" target="_blank" class="primary-btn" style="display: inline-flex; margin-top: 1rem; color: #fff;">Open File</a></div>`;
   }
 
   document.getElementById('lightboxModal').classList.add('active');
@@ -993,12 +1502,14 @@ async function downloadSingleDoc(fileId) {
   const fileObj = vehicle.files.find(f => f.id === fileId);
   if (!fileObj) return;
 
+  const fileSrc = fileObj.url || fileObj.data;
   const a = document.createElement('a');
-  a.href = fileObj.data;
+  a.href = fileSrc;
   a.download = fileObj.name;
+  a.target = '_blank';
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
+  setTimeout(() => document.body.removeChild(a), 500);
 }
 
 // Bulk ZIP Download using JSZip
@@ -1017,11 +1528,24 @@ async function handleDownloadAllZip() {
   const zip = new JSZip();
   const folder = zip.folder(`${vehicle.vehicleNo}_Documents`);
 
-  vehicle.files.forEach(f => {
-    // Extract base64 part
-    const base64Data = f.data.split(',')[1];
-    folder.file(f.name, base64Data, { base64: true });
-  });
+  for (let i = 0; i < vehicle.files.length; i++) {
+    const f = vehicle.files[i];
+    const fileSrc = f.url || f.data;
+    if (!fileSrc) continue;
+
+    try {
+      if (fileSrc.startsWith('http')) {
+        const res = await fetch(fileSrc);
+        const blob = await res.blob();
+        folder.file(f.name || `doc_${i+1}.jpg`, blob);
+      } else if (fileSrc.includes(',')) {
+        const base64Data = fileSrc.split(',')[1];
+        folder.file(f.name || `doc_${i+1}.jpg`, base64Data, { base64: true });
+      }
+    } catch (e) {
+      console.warn('Zip file add notice:', e);
+    }
+  }
 
   const content = await zip.generateAsync({ type: 'blob' });
   const a = document.createElement('a');
@@ -1099,6 +1623,9 @@ async function importDatabaseJson(e) {
             await db.saveVehicle(item);
           }
           await loadVehicles();
+          if (currentSyncKey) {
+            await pushCurrentVehiclesToCloud();
+          }
           alert('Database restored successfully!');
         }
       }
@@ -1109,26 +1636,228 @@ async function importDatabaseJson(e) {
   reader.readAsText(file);
 }
 
-async function exportVehiclesCsv() {
-  const allVehicles = await db.getAllVehicles();
-  if (allVehicles.length === 0) {
-    alert('No records to export.');
+// ==================== EXCEL (.XLSX) EXPORT ENGINE ====================
+async function exportVehiclesExcel() {
+  let allVehicles = (vehicles && vehicles.length > 0) ? vehicles : await db.getAllVehicles();
+  if (!allVehicles || allVehicles.length === 0) {
+    alert('No vehicle records to export.');
     return;
   }
 
-  let csv = 'Vehicle No,Reg Date,Fitness Upto,Insurance Upto,Tax Upto,Permit Upto,National Permit,PUCC Upto,GPS Remarks,Documents Count\n';
+  function formatExcelDate(dateStr) {
+    if (!dateStr) return '-';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      let hours = d.getHours();
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+      return `${day}/${month}/${year} ${hours}:${minutes} ${ampm}`;
+    } catch (e) {
+      return dateStr;
+    }
+  }
 
-  allVehicles.forEach(v => {
-    csv += `"${v.vehicleNo}","${v.regDate || ''}","${v.fitnessUpto || ''}","${v.insuranceUpto || ''}","${v.taxUpto || ''}","${v.permitUpto || ''}","${v.nationalPermit || ''}","${v.pucc || ''}","${v.gps || ''}",${(v.files && v.files.length) || 0}\n`;
+  // Build rows array with structured headers
+  const rows = allVehicles.map(v => {
+    const overallStatus = getOverallVehicleStatus(v);
+    let statusLabel = 'Valid';
+    if (overallStatus === 'expired') statusLabel = 'Expired';
+    else if (overallStatus === 'expiring-critical') statusLabel = 'Expires in <= 10 Days';
+    else if (overallStatus === 'expiring') statusLabel = 'Expiring Soon';
+
+    return {
+      'Vehicle Number': v.vehicleNo || '',
+      'Status': statusLabel,
+      'Registration Date': v.regDate || '-',
+      'Fitness Upto': formatExcelDate(v.fitnessUpto),
+      'Insurance Upto': formatExcelDate(v.insuranceUpto),
+      'Tax Upto': formatExcelDate(v.taxUpto),
+      'Permit Upto': formatExcelDate(v.permitUpto),
+      'National Permit Upto': formatExcelDate(v.nationalPermit),
+      'PUCC Upto': formatExcelDate(v.pucc),
+      'GPS / Remarks': v.gps || '-',
+      'Attached Docs Count': (v.files && v.files.length) || 0
+    };
   });
 
-  const blob = new Blob([csv], { type: 'text/csv' });
+  // If XLSX library is loaded, export true Microsoft Excel .xlsx
+  if (typeof XLSX !== 'undefined') {
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(rows);
+
+    // Auto-fit column widths
+    ws['!cols'] = [
+      { wch: 16 }, // Vehicle Number
+      { wch: 22 }, // Status
+      { wch: 18 }, // Registration Date
+      { wch: 22 }, // Fitness Upto
+      { wch: 22 }, // Insurance Upto
+      { wch: 22 }, // Tax Upto
+      { wch: 22 }, // Permit Upto
+      { wch: 22 }, // National Permit Upto
+      { wch: 22 }, // PUCC Upto
+      { wch: 25 }, // GPS / Remarks
+      { wch: 18 }  // Attached Docs Count
+    ];
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Vehicles Report');
+    const todayStr = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `Vehicle_Expiry_Report_${todayStr}.xlsx`);
+    return;
+  }
+
+  // Fallback to CSV if library is not yet loaded
+  exportVehiclesCsv();
+}
+
+async function exportVehiclesCsv() {
+  let allVehicles = (vehicles && vehicles.length > 0) ? vehicles : await db.getAllVehicles();
+  if (!allVehicles || allVehicles.length === 0) {
+    alert('No vehicle records to export.');
+    return;
+  }
+
+  // Prepend UTF-8 BOM so Excel opens cleanly on Windows, Android & iOS
+  let csv = '\uFEFFVehicle No,Reg Date,Fitness Upto,Insurance Upto,Tax Upto,Permit Upto,National Permit,PUCC Upto,GPS Remarks,Documents Count\n';
+
+  allVehicles.forEach(v => {
+    csv += `"${v.vehicleNo || ''}","${v.regDate || ''}","${v.fitnessUpto || ''}","${v.insuranceUpto || ''}","${v.taxUpto || ''}","${v.permitUpto || ''}","${v.nationalPermit || ''}","${v.pucc || ''}","${v.gps || ''}",${(v.files && v.files.length) || 0}\n`;
+  });
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `Vehicle_Expiry_Report_${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+}
+
+// ==================== EXCEL (.XLSX / .CSV) IMPORT ENGINE ====================
+async function handleExcelImport(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  if (typeof XLSX === 'undefined') {
+    alert('Excel engine is still loading. Please try again in a few moments.');
+    e.target.value = '';
+    return;
+  }
+
+  try {
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+    const firstSheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+
+    if (!rows || rows.length === 0) {
+      alert('No data rows found in the uploaded Excel file.');
+      e.target.value = '';
+      return;
+    }
+
+    function findVal(row, possibleNames) {
+      const keys = Object.keys(row);
+      for (const p of possibleNames) {
+        const pClean = p.toLowerCase().replace(/[^a-z0-9]/g, '');
+        for (const k of keys) {
+          const kClean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (kClean.includes(pClean)) {
+            return row[k];
+          }
+        }
+      }
+      return '';
+    }
+
+    function parseExcelDate(val) {
+      if (!val) return '';
+      if (val instanceof Date) {
+        if (isNaN(val.getTime())) return '';
+        const y = val.getFullYear();
+        const m = String(val.getMonth() + 1).padStart(2, '0');
+        const d = String(val.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}T08:00`;
+      }
+      const str = String(val).trim();
+      if (!str || str === '-') return '';
+
+      const dateParts = str.split(' ')[0].split(/[-/]/);
+      if (dateParts.length === 3) {
+        if (dateParts[0].length === 4) {
+          // YYYY-MM-DD
+          return `${dateParts[0]}-${dateParts[1].padStart(2, '0')}-${dateParts[2].padStart(2, '0')}T08:00`;
+        } else if (dateParts[2].length === 4) {
+          // DD/MM/YYYY
+          return `${dateParts[2]}-${dateParts[1].padStart(2, '0')}-${dateParts[0].padStart(2, '0')}T08:00`;
+        }
+      }
+
+      const parsed = new Date(str);
+      if (!isNaN(parsed.getTime())) {
+        const y = parsed.getFullYear();
+        const m = String(parsed.getMonth() + 1).padStart(2, '0');
+        const d = String(parsed.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}T08:00`;
+      }
+      return '';
+    }
+
+    const importedVehicles = [];
+    for (const r of rows) {
+      const vNo = findVal(r, ['vehicleno', 'regno', 'vehicle number', 'registration', 'vno', 'vehicle']);
+      if (!vNo) continue;
+
+      const vehicleNo = String(vNo).trim().toUpperCase();
+      const regDateRaw = findVal(r, ['regdate', 'registration date', 'reg date']);
+      const fitnessRaw = findVal(r, ['fitness', 'fitnessexpiry', 'fitness upto']);
+      const insuranceRaw = findVal(r, ['insurance', 'insuranceexpiry', 'insurance upto', 'ins upto']);
+      const taxRaw = findVal(r, ['tax', 'taxexpiry', 'tax upto']);
+      const permitRaw = findVal(r, ['permit', 'permitexpiry', 'permit upto']);
+      const nationalPermitRaw = findVal(r, ['nationalpermit', 'national permit', 'np upto']);
+      const puccRaw = findVal(r, ['pucc', 'puccexpiry', 'pucc upto', 'pollution']);
+      const gpsRaw = findVal(r, ['gps', 'remarks', 'make', 'model', 'notes']);
+
+      importedVehicles.push({
+        vehicleNo,
+        regDate: toDateInputValue(parseExcelDate(regDateRaw)),
+        fitnessUpto: parseExcelDate(fitnessRaw),
+        insuranceUpto: parseExcelDate(insuranceRaw),
+        taxUpto: parseExcelDate(taxRaw),
+        permitUpto: parseExcelDate(permitRaw),
+        nationalPermit: parseExcelDate(nationalPermitRaw),
+        pucc: parseExcelDate(puccRaw),
+        gps: String(gpsRaw || '').trim(),
+        files: []
+      });
+    }
+
+    if (importedVehicles.length === 0) {
+      alert('Could not find any vehicles with a valid vehicle number in this Excel file.\n\nPlease ensure your Excel column has a title like "Vehicle Number" or "Reg No".');
+      e.target.value = '';
+      return;
+    }
+
+    if (confirm(`Found ${importedVehicles.length} vehicles in Excel.\n\nImport them into your workspace now?`)) {
+      for (const item of importedVehicles) {
+        await db.saveVehicle(item);
+      }
+      await pushCurrentVehiclesToCloud();
+      await loadVehicles();
+      alert(`🎉 Successfully imported ${importedVehicles.length} vehicles from Excel!`);
+    }
+  } catch (err) {
+    console.error('Excel Import Error:', err);
+    alert('Error reading Excel file: ' + err.message);
+  } finally {
+    e.target.value = '';
+  }
 }
 
 // ==================== CALENDAR VIEW ====================
@@ -1268,16 +1997,21 @@ if (typeof pdfjsLib !== 'undefined') {
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 }
 
-async function convertPdfToImages(pdfDataUri) {
-  const base64Data = pdfDataUri.split(',')[1];
-  const binaryString = window.atob(base64Data);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+async function convertPdfToImages(pdfSource) {
+  let loadingTask;
+  if (typeof pdfSource === 'string' && pdfSource.startsWith('data:application/pdf')) {
+    const base64Data = pdfSource.split(',')[1];
+    const binaryString = window.atob(base64Data);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    loadingTask = pdfjsLib.getDocument({ data: bytes });
+  } else {
+    loadingTask = pdfjsLib.getDocument(pdfSource);
   }
 
-  const loadingTask = pdfjsLib.getDocument({ data: bytes });
   const pdf = await loadingTask.promise;
   const images = [];
 
@@ -1294,44 +2028,56 @@ async function convertPdfToImages(pdfDataUri) {
   return images;
 }
 
-// Image compression helper to speed up OCR
-async function compressImageForOcr(base64Str, maxWidth = 1500) {
-  return new Promise((resolve, reject) => {
+// Image compression helper to speed up OCR and ensure clean canvas
+async function compressImageForOcr(imageSrc, maxWidth = 1600) {
+  return new Promise((resolve) => {
     const img = new Image();
+    img.crossOrigin = 'anonymous';
     img.onload = () => {
-      let width = img.width;
-      let height = img.height;
-      
-      if (width > maxWidth) {
-        height = Math.round((height * maxWidth) / width);
-        width = maxWidth;
+      try {
+        let width = img.width;
+        let height = img.height;
+        
+        if (width > maxWidth) {
+          height = Math.round((height * maxWidth) / width);
+          width = maxWidth;
+        }
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      } catch (e) {
+        resolve(imageSrc);
       }
-      
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, width, height);
-      
-      resolve(canvas.toDataURL('image/jpeg', 0.8));
     };
-    img.onerror = reject;
-    img.src = base64Str;
+    img.onerror = () => resolve(imageSrc);
+    img.src = imageSrc;
   });
 }
 
 // ==================== SMART OCR / AI SCANNER ====================
 async function ocrScanAllDocs() {
+  if (typeof Tesseract === 'undefined') {
+    alert('⏳ AI Scanner engine is loading from CDN. Please check internet and try again.');
+    return;
+  }
+
   const vehicle = await db.getVehicle(currentDocManagerVehicleId);
   if (!vehicle || !vehicle.files || vehicle.files.length === 0) {
     alert('No documents to scan. Please upload files first.');
     return;
   }
 
-  const filesToScan = vehicle.files.filter(f =>
-    (f.type && f.type.startsWith('image/')) || (f.data && f.data.startsWith('data:image/')) ||
-    (f.type && f.type === 'application/pdf') || (f.data && f.data.startsWith('data:application/pdf'))
-  );
+  const filesToScan = vehicle.files.filter(f => {
+    const src = f.url || f.data || '';
+    const type = f.type || '';
+    return type.startsWith('image/') || src.startsWith('data:image/') || src.startsWith('http') ||
+           type === 'application/pdf' || src.startsWith('data:application/pdf') || src.toLowerCase().includes('.pdf');
+  });
 
   if (filesToScan.length === 0) {
     alert('No scannable files found. OCR works on photos/images and PDFs.');
@@ -1342,43 +2088,59 @@ async function ocrScanAllDocs() {
   document.getElementById('ocrModal').classList.add('active');
   document.getElementById('ocrResults').style.display = 'none';
   document.getElementById('ocrStatus').style.display = 'block';
+  const statusText = document.getElementById('ocrStatusText');
+  if (statusText) statusText.innerText = 'Initializing AI OCR Engine...';
+  const progressBar = document.getElementById('ocrProgressBar');
+  if (progressBar) progressBar.style.width = '10%';
   let allExtractedDates = [];
   const totalFiles = filesToScan.length;
 
   try {
     for (let i = 0; i < totalFiles; i++) {
       const file = filesToScan[i];
-      const progress = Math.round(((i + 0.5) / totalFiles) * 100);
-      document.getElementById('ocrProgressBar').style.width = progress + '%';
+      const fileSrc = file.url || file.data;
+      if (!fileSrc) continue;
+
+      const progress = Math.round(((i + 0.1) / totalFiles) * 100);
+      if (progressBar) progressBar.style.width = progress + '%';
+      if (statusText) statusText.innerText = `Scanning document ${i + 1} of ${totalFiles} (${file.name || 'Photo'})...`;
 
       let fileExtractedText = '';
 
-      if (file.data.startsWith('data:application/pdf')) {
-        const pdfImages = await convertPdfToImages(file.data);
-        for (let p = 0; p < pdfImages.length; p++) {
-          const result = await Tesseract.recognize(pdfImages[p], 'eng', {
-            logger: m => {
-              if (m.status === 'recognizing text') {
-                const innerP = Math.round(((i + ((m.progress + p) / pdfImages.length)) / totalFiles) * 100);
-                document.getElementById('ocrProgressBar').style.width = innerP + '%';
+      const isPdf = (file.type === 'application/pdf') || fileSrc.startsWith('data:application/pdf') || fileSrc.toLowerCase().includes('.pdf');
+
+      if (isPdf) {
+        try {
+          const pdfImages = await convertPdfToImages(fileSrc);
+          for (let p = 0; p < pdfImages.length; p++) {
+            const result = await Tesseract.recognize(pdfImages[p], 'eng', {
+              logger: m => {
+                if (m.status === 'recognizing text' && progressBar) {
+                  const innerP = Math.round(((i + ((m.progress + p) / pdfImages.length)) / totalFiles) * 100);
+                  progressBar.style.width = innerP + '%';
+                }
               }
-            }
-          });
-          fileExtractedText += `\n${result.data.text}\n`;
+            });
+            fileExtractedText += `\n${result.data.text}\n`;
+          }
+        } catch (pdfErr) {
+          console.warn('PDF OCR processing notice:', pdfErr);
         }
-      } else if (file.data.startsWith('data:image/')) {
-        // Compress image before OCR to speed up processing
-        const compressedImage = await compressImageForOcr(file.data);
-        const result = await Tesseract.recognize(compressedImage, 'eng', {
+      } else {
+        // Image scanning: handles Cloudinary URLs, base64 data, etc.
+        const imageToScan = await compressImageForOcr(fileSrc);
+        const result = await Tesseract.recognize(imageToScan, 'eng', {
           logger: m => {
-            if (m.status === 'recognizing text') {
+            if (m.status === 'recognizing text' && progressBar) {
               const p = Math.round(((i + m.progress) / totalFiles) * 100);
-              document.getElementById('ocrProgressBar').style.width = p + '%';
+              progressBar.style.width = p + '%';
             }
           }
         });
         fileExtractedText += `\n${result.data.text}\n`;
       }
+
+      console.log(`📄 OCR Extracted Text for ${file.name}:`, fileExtractedText);
 
       const fileDates = extractDatesFromText(fileExtractedText);
       const detectedType = detectDocumentTypeFromText(fileExtractedText);
@@ -1397,8 +2159,7 @@ async function ocrScanAllDocs() {
       });
     }
 
-    document.getElementById('ocrProgressBar').style.width = '100%';
-
+    if (progressBar) progressBar.style.width = '100%';
     showOcrResults(allExtractedDates, vehicle);
   } catch (error) {
     console.error('OCR Error:', error);
@@ -1421,52 +2182,70 @@ function detectDocumentTypeFromText(text) {
 }
 
 function extractDatesFromText(text) {
+  if (!text) return [];
   const dates = [];
+  const addedSet = new Set();
 
-  // Common Indian date formats: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
-  const dateRegex = /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})\b/g;
+  function addDate(day, month, year, raw) {
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      if (year >= 0 && year < 100) year += 2000;
+      if (year >= 2000 && year <= 2045) {
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00`;
+        const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+        if (!addedSet.has(dateStr)) {
+          addedSet.add(dateStr);
+          dates.push({ dateStr, dateLabel, raw: raw.trim() });
+        }
+      }
+    }
+  }
+
+  const monthNames = { 
+    'jan': 1, 'january': 1,
+    'feb': 2, 'february': 2,
+    'mar': 3, 'march': 3,
+    'apr': 4, 'april': 4,
+    'may': 5,
+    'jun': 6, 'june': 6,
+    'jul': 7, 'july': 7,
+    'aug': 8, 'august': 8,
+    'sep': 9, 'sept': 9, 'september': 9,
+    'oct': 10, 'october': 10,
+    'nov': 11, 'november': 11,
+    'dec': 12, 'december': 12 
+  };
+  
+  // 1. Format: DD-MMM-YYYY or DD MMM YY (e.g. 14-Sep-2026, 14 Sep 26, 22/OCT/2025)
+  const textMonthRegex1 = /\b(\d{1,2})[\/\-\.\s]+([a-zA-Z]{3,9})[\/\-\.\s]+(\d{2,4})\b/g;
   let match;
-  while ((match = dateRegex.exec(text)) !== null) {
+  while ((match = textMonthRegex1.exec(text)) !== null) {
     const day = parseInt(match[1]);
-    const month = parseInt(match[2]);
+    const month = monthNames[match[2].toLowerCase().substring(0, 3)];
     const year = parseInt(match[3]);
-    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 2000 && year <= 2040) {
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00`;
-      const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
-      dates.push({ dateStr, dateLabel, raw: match[0] });
-    }
+    if (month) addDate(day, month, year, match[0]);
   }
 
-  // Text month formats: DD-MMM-YYYY or DD MMM YYYY (e.g. 14-Jan-2016)
-  const monthNames = { 'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6, 'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12 };
-  const textMonthRegex = /\b(\d{1,2})[\/\-\.\s]+([a-zA-Z]{3,9})[\/\-\.\s]+(\d{4})\b/g;
-  while ((match = textMonthRegex.exec(text)) !== null) {
-    const day = parseInt(match[1]);
-    const monthStr = match[2].toLowerCase().substring(0, 3);
+  // 1b. Format: MMM DD, YYYY or MMM DD YYYY (e.g. Sep 14, 2026)
+  const textMonthRegex2 = /\b([a-zA-Z]{3,9})[\s\.\-]+(\d{1,2})(?:st|nd|rd|th)?,?[\s\.\-]+(\d{2,4})\b/g;
+  while ((match = textMonthRegex2.exec(text)) !== null) {
+    const month = monthNames[match[1].toLowerCase().substring(0, 3)];
+    const day = parseInt(match[2]);
     const year = parseInt(match[3]);
-    const month = monthNames[monthStr];
-    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 2000 && year <= 2040) {
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00`;
-      const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
-      if (!dates.find(d => d.dateStr === dateStr)) {
-        dates.push({ dateStr, dateLabel, raw: match[0] });
-      }
-    }
+    if (month) addDate(day, month, year, match[0]);
   }
 
-  // Also try YYYY-MM-DD format
-  const isoRegex = /\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b/g;
-  while ((match = isoRegex.exec(text)) !== null) {
-    const year = parseInt(match[1]);
-    const month = parseInt(match[2]);
-    const day = parseInt(match[3]);
-    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 2000 && year <= 2040) {
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00`;
-      const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
-      if (!dates.find(d => d.dateStr === dateStr)) {
-        dates.push({ dateStr, dateLabel, raw: match[0] });
-      }
+  // 2. Format: Numeric DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (supports /, -, ., |, \, spaces)
+  const numDateRegex = /\b(\d{1,4})[\/\-\.\\|\s]+(\d{1,2})[\/\-\.\\|\s]+(\d{2,4})\b/g;
+  while ((match = numDateRegex.exec(text)) !== null) {
+    let day = parseInt(match[1]);
+    let month = parseInt(match[2]);
+    let year = parseInt(match[3]);
+    if (match[1].length === 4) {
+      year = parseInt(match[1]);
+      month = parseInt(match[2]);
+      day = parseInt(match[3]);
     }
+    addDate(day, month, year, match[0]);
   }
 
   return dates;
@@ -1572,6 +2351,39 @@ let currentCompanyName = localStorage.getItem('vehicleex_company_name') || '';
 let currentSyncKey = localStorage.getItem('vehicleex_sync_key') || '';
 let isSyncingFromCloud = false;
 
+let currentAlertConfig = {
+  enabled: false,
+  phone: '',
+  apiKey: '',
+  noticeDays: 7,
+  lastAlertDate: ''
+};
+
+let currentTelegramConfig = {
+  enabled: false,
+  botToken: '',
+  chatId: '',
+  noticeDays: 7,
+  lastAlertDate: ''
+};
+
+function loadLocalAlertConfig() {
+  if (!currentSyncKey) return;
+  try {
+    const savedWa = localStorage.getItem(`vehicleex_alert_config_${currentSyncKey}`);
+    if (savedWa) {
+      currentAlertConfig = { ...currentAlertConfig, ...JSON.parse(savedWa) };
+    }
+  } catch (e) {}
+
+  try {
+    const savedTg = localStorage.getItem(`vehicleex_tg_config_${currentSyncKey}`);
+    if (savedTg) {
+      currentTelegramConfig = { ...currentTelegramConfig, ...JSON.parse(savedTg) };
+    }
+  } catch (e) {}
+}
+
 function initFirebaseApp() {
   try {
     if (typeof firebase !== 'undefined' && !firebase.apps.length) {
@@ -1589,6 +2401,7 @@ function initCompanySync() {
   initFirebaseApp();
   updateCompanyHeaderBadge();
   if (currentSyncKey) {
+    loadLocalAlertConfig();
     listenToFirebaseWorkspace();
   }
 }
@@ -1614,29 +2427,91 @@ function updateCompanyHeaderBadge() {
 }
 
 function openCompanyModal() {
-  document.getElementById('companyCodeInput').value = currentCompanyName;
-  document.getElementById('syncKeyInput').value = currentSyncKey;
-
-  const leaveBtn = document.getElementById('leaveCompanyBtn');
-  const syncLocalBtn = document.getElementById('syncLocalBtn');
-  const activeBadge = document.getElementById('activeSyncBadge');
+  const activeView = document.getElementById('companyActiveView');
+  const setupView = document.getElementById('companySetupView');
+  const backBtn = document.getElementById('backToActiveWsBtn');
 
   if (currentSyncKey) {
-    leaveBtn.style.display = 'block';
-    syncLocalBtn.style.display = 'block';
-    activeBadge.style.display = 'block';
-    document.getElementById('activeCompanyName').innerText = currentCompanyName || 'Company Workspace';
-    document.getElementById('activeSyncKey').innerText = currentSyncKey;
+    // Already connected to a company! Show Dashboard View
+    if (activeView) activeView.style.display = 'block';
+    if (setupView) setupView.style.display = 'none';
+    if (backBtn) backBtn.style.display = 'none';
+
+    const nameEl = document.getElementById('activeCompanyName');
+    const keyEl = document.getElementById('activeSyncKey');
+    const countEl = document.getElementById('activeWsVehicleCount');
+
+    if (nameEl) nameEl.textContent = currentCompanyName || 'Company Workspace';
+    if (keyEl) keyEl.textContent = currentSyncKey;
+    if (countEl) countEl.textContent = Array.isArray(vehicles) ? vehicles.length : '0';
+
+    loadLocalAlertConfig();
+    renderWaAlertUI();
+    renderTgAlertUI();
+
+    // Refresh alert configs from cloud in background
+    fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`)
+      .then(res => res.json())
+      .then(wsData => {
+        if (wsData && typeof wsData === 'object') {
+          if (wsData.alertConfig) {
+            currentAlertConfig = { ...currentAlertConfig, ...wsData.alertConfig };
+            localStorage.setItem(`vehicleex_alert_config_${currentSyncKey}`, JSON.stringify(currentAlertConfig));
+            renderWaAlertUI();
+          }
+          if (wsData.telegramConfig) {
+            currentTelegramConfig = { ...currentTelegramConfig, ...wsData.telegramConfig };
+            localStorage.setItem(`vehicleex_tg_config_${currentSyncKey}`, JSON.stringify(currentTelegramConfig));
+            renderTgAlertUI();
+          }
+        }
+      })
+      .catch(() => {});
   } else {
-    leaveBtn.style.display = 'none';
-    syncLocalBtn.style.display = 'none';
-    activeBadge.style.display = 'none';
+    // Not connected: Show Create/Join tabs
+    if (activeView) activeView.style.display = 'none';
+    if (setupView) setupView.style.display = 'block';
+    if (backBtn) backBtn.style.display = 'none';
+    switchCompanyTab('create');
   }
-  document.getElementById('companyModal').classList.add('active');
+
+  const modal = document.getElementById('companyModal');
+  if (modal) modal.classList.add('active');
+}
+
+function showCompanySwitchView() {
+  const activeView = document.getElementById('companyActiveView');
+  const setupView = document.getElementById('companySetupView');
+  const backBtn = document.getElementById('backToActiveWsBtn');
+
+  if (activeView) activeView.style.display = 'none';
+  if (setupView) setupView.style.display = 'block';
+  if (backBtn) backBtn.style.display = currentSyncKey ? 'block' : 'none';
+  switchCompanyTab('create');
+}
+
+function switchCompanyTab(tab) {
+  const tabCreate = document.getElementById('tabCreateCompany');
+  const tabJoin = document.getElementById('tabJoinCompany');
+  const paneCreate = document.getElementById('companyCreateTabContent');
+  const paneJoin = document.getElementById('companyJoinTabContent');
+
+  if (tab === 'join') {
+    if (tabCreate) tabCreate.classList.remove('active');
+    if (tabJoin) tabJoin.classList.add('active');
+    if (paneCreate) paneCreate.style.display = 'none';
+    if (paneJoin) paneJoin.style.display = 'block';
+  } else {
+    if (tabCreate) tabCreate.classList.add('active');
+    if (tabJoin) tabJoin.classList.remove('active');
+    if (paneCreate) paneCreate.style.display = 'block';
+    if (paneJoin) paneJoin.style.display = 'none';
+  }
 }
 
 function closeCompanyModal() {
-  document.getElementById('companyModal').classList.remove('active');
+  const modal = document.getElementById('companyModal');
+  if (modal) modal.classList.remove('active');
 }
 
 function copySyncKey(e) {
@@ -1656,23 +2531,48 @@ function copySyncKey(e) {
 
 function shareSyncKeyWhatsApp() {
   if (currentSyncKey) {
-    const text = `🏢 Join our Company Vehicle Workspace in VehicleEx Pro!\n\nCompany: ${currentCompanyName || 'Company Workspace'}\nSync Key: ${currentSyncKey}\n\nOpen app & paste this key in Company Sync: https://msuhailc-47.github.io/Metro-Vehicle/`;
+    const text = `🏢 Join our Company Vehicle Workspace in VehicleEx Pro!\n\nCompany: ${currentCompanyName || 'Company Workspace'}\nSync Key: ${currentSyncKey}\n\nOpen app & paste this key in Company Sync: https://metro-vehicle.web.app/`;
     const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
     window.open(url, '_blank');
   }
 }
 
+function sanitizeForCloud(data) {
+  return JSON.parse(JSON.stringify(data, (key, value) => {
+    return value === undefined ? null : value;
+  }));
+}
+
 function getLightVehicles(vehicles) {
+  if (!Array.isArray(vehicles)) return [];
   return vehicles.map(v => {
     const light = { ...v };
+    light.vehicleNo = light.vehicleNo ? String(light.vehicleNo).trim().toUpperCase() : '';
+    light.regDate = light.regDate || '';
+    light.fitnessUpto = light.fitnessUpto || '';
+    light.insuranceUpto = light.insuranceUpto || '';
+    light.taxUpto = light.taxUpto || '';
+    light.permitUpto = light.permitUpto || '';
+    light.nationalPermit = light.nationalPermit || '';
+    light.pucc = light.pucc || '';
+    light.gps = light.gps || '';
+
     if (light.files && Array.isArray(light.files)) {
-      light.files = light.files.map(f => ({
-        id: f.id,
-        name: f.name,
-        type: f.type,
-        size: f.size,
-        category: f.category
-      }));
+      light.files = light.files.map(f => {
+        const cloudUrl = (f.url && f.url.startsWith('http')) ? f.url 
+          : ((f.data && f.data.startsWith('http')) ? f.data : (f.url || f.data || ''));
+        return {
+          id: f.id || 'f_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+          name: f.name || 'Document',
+          type: f.type || 'image/jpeg',
+          size: f.size || 0,
+          category: f.category || 'Document',
+          url: cloudUrl,
+          data: cloudUrl
+        };
+      });
+    } else {
+      light.files = [];
     }
     return light;
   });
@@ -1684,65 +2584,164 @@ function generateSyncKey(companyName) {
   return `${prefix}-${randNum}`;
 }
 
-async function handleCompanyFormSubmit(e) {
+async function handleCreateCompanySubmit(e) {
   e.preventDefault();
-  initFirebaseApp();
-  const companyName = document.getElementById('companyCodeInput').value.trim();
-  let syncKey = document.getElementById('syncKeyInput').value.trim().toUpperCase();
+  const input = document.getElementById('createCompanyNameInput');
+  const companyName = input ? input.value.trim() : '';
 
   if (!companyName) {
-    alert('Please enter a Company Name / Fleet Title.');
+    alert('Please enter a Company or Fleet Name.');
     return;
   }
 
-  try {
-    if (syncKey) {
-      // Connect to existing workspace
-      const res = await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${syncKey}.json`);
-      const data = await res.json();
-      if (!data) {
-        alert('⚠️ Workspace not found with this Sync Key. Please check the key or create a new workspace.');
-        return;
-      }
-      currentSyncKey = syncKey;
-      currentCompanyName = data.name || companyName;
-    } else {
-      // Create new workspace with clean friendly key
-      currentSyncKey = generateSyncKey(companyName);
-      currentCompanyName = companyName;
-      
-      const allLocalVehicles = await db.getAllVehicles();
-      const lightVehicles = getLightVehicles(allLocalVehicles);
-      
-      const payload = {
-        name: currentCompanyName,
-        vehicles: lightVehicles,
-        createdAt: new Date().toISOString()
-      };
+  initFirebaseApp();
+  const syncKey = generateSyncKey(companyName);
+  currentSyncKey = syncKey;
+  currentCompanyName = companyName;
 
-      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-    }
+  try {
+    const allLocalVehicles = await db.getAllVehicles();
+    const lightVehicles = getLightVehicles(allLocalVehicles);
+
+    const payload = sanitizeForCloud({
+      name: currentCompanyName,
+      vehicles: lightVehicles,
+      createdAt: new Date().toISOString()
+    });
+
+    await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
     localStorage.setItem('vehicleex_company_name', currentCompanyName);
     localStorage.setItem('vehicleex_sync_key', currentSyncKey);
 
     updateCompanyHeaderBadge();
     listenToFirebaseWorkspace();
-    openCompanyModal(); // Refresh modal to show prominent sync key & copy button
+    openCompanyModal();
 
-    // Copy to clipboard automatically on connection
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(currentSyncKey).catch(() => {});
     }
 
-    alert(`🎉 Connected to Workspace: ${currentCompanyName}!\n\n🔑 Sync Key: ${currentSyncKey}\n(Key automatically copied to clipboard!)`);
+    alert(`🎉 Company Workspace Created!\n\n🏢 Company: ${currentCompanyName}\n🔑 Sync Key: ${currentSyncKey}\n\n(Sync Key copied to clipboard! Share this key with your staff.)`);
   } catch (err) {
-    console.error('Company Connection Error:', err);
-    alert('⚠️ Connection Error: ' + err.message);
+    console.error('Create Company Error:', err);
+    alert('⚠️ Error creating company workspace: ' + err.message);
+  }
+}
+
+async function handleJoinCompanySubmit(e) {
+  e.preventDefault();
+  const keyInput = document.getElementById('joinSyncKeyInput');
+  const nameInput = document.getElementById('joinCompanyNameInput');
+  const syncKey = keyInput ? keyInput.value.trim().toUpperCase() : '';
+  const optionalName = nameInput ? nameInput.value.trim() : '';
+
+  if (!syncKey) {
+    alert('Please enter a Workspace Sync Key.');
+    return;
+  }
+
+  initFirebaseApp();
+
+  try {
+    const res = await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${syncKey}.json`);
+    const data = await res.json();
+
+    if (!data) {
+      alert(`⚠️ Workspace with key "${syncKey}" not found.\n\nPlease check the Sync Key with your company admin.`);
+      return;
+    }
+
+    currentSyncKey = syncKey;
+    currentCompanyName = data.name || optionalName || syncKey;
+
+    localStorage.setItem('vehicleex_company_name', currentCompanyName);
+    localStorage.setItem('vehicleex_sync_key', currentSyncKey);
+
+    updateCompanyHeaderBadge();
+
+    if (Array.isArray(data.vehicles)) {
+      isSyncingFromCloud = true;
+      try {
+        await db.clearAll();
+        for (const cv of data.vehicles) {
+          await db.saveVehicle(cv, true);
+        }
+        await loadVehicles();
+      } finally {
+        isSyncingFromCloud = false;
+      }
+    }
+
+    listenToFirebaseWorkspace();
+    openCompanyModal();
+
+    alert(`✅ Connected to "${currentCompanyName}"!\n\n${data.vehicles ? data.vehicles.length : 0} vehicles synced from cloud.`);
+  } catch (err) {
+    console.error('Join Workspace Error:', err);
+    alert('⚠️ Error joining workspace: ' + err.message);
+  }
+}
+
+async function handleCompanyFormSubmit(e) {
+  // Backwards compatibility alias
+  return handleCreateCompanySubmit(e);
+}
+
+async function mergeCloudVehicles(cloudVehicles) {
+  if (!Array.isArray(cloudVehicles)) return;
+  isSyncingFromCloud = true;
+  try {
+    const localVehicles = await db.getAllVehicles();
+    const localMap = new Map();
+    localVehicles.forEach(v => {
+      const key = v.vehicleNo ? v.vehicleNo.trim().toUpperCase() : String(v.id);
+      localMap.set(key, v);
+    });
+
+    const cloudKeySet = new Set();
+
+    for (const cv of cloudVehicles) {
+      const key = cv.vehicleNo ? cv.vehicleNo.trim().toUpperCase() : String(cv.id);
+      cloudKeySet.add(key);
+
+      const existingLocal = localMap.get(key);
+      if (existingLocal) {
+        cv.id = existingLocal.id;
+      } else {
+        delete cv.id;
+      }
+      cv.files = Array.isArray(cv.files) ? cv.files : [];
+      await db.saveVehicle(cv, true);
+    }
+
+    // Synchronize vehicle deletions: remove local vehicles that were deleted from cloud
+    for (const [key, lv] of localMap.entries()) {
+      if (!cloudKeySet.has(key)) {
+        await db.deleteVehicle(lv.id, true);
+      }
+    }
+
+    await loadVehicles();
+
+    // If Document Manager Modal is currently open for a vehicle, re-render its document list live!
+    const docModal = document.getElementById('docManagerModal');
+    if (docModal && docModal.classList.contains('active') && currentDocManagerVehicleId) {
+      const activeDocVehicle = await db.getVehicle(currentDocManagerVehicleId);
+      if (activeDocVehicle) {
+        renderDocList(activeDocVehicle);
+      } else {
+        closeDocManagerModal();
+      }
+    }
+  } catch (err) {
+    console.error('Merge Cloud Vehicles Error:', err);
+  } finally {
+    isSyncingFromCloud = false;
   }
 }
 
@@ -1756,14 +2755,19 @@ function listenToFirebaseWorkspace() {
       firebaseListenerRef = firebaseDb.ref('workspaces/' + currentSyncKey);
       firebaseListenerRef.on('value', async (snapshot) => {
         const val = snapshot.val();
-        if (val && Array.isArray(val.vehicles) && !isSyncingFromCloud) {
-          isSyncingFromCloud = true;
-          await db.clearAll();
-          for (const cv of val.vehicles) {
-            await db.saveVehicle(cv, true);
+        if (val && !isSyncingFromCloud) {
+          if (val.alertConfig && typeof val.alertConfig === 'object') {
+            currentAlertConfig = { ...currentAlertConfig, ...val.alertConfig };
+            localStorage.setItem(`vehicleex_alert_config_${currentSyncKey}`, JSON.stringify(currentAlertConfig));
+            renderWaAlertUI();
           }
-          await loadVehicles();
-          isSyncingFromCloud = false;
+          if (val.telegramConfig && typeof val.telegramConfig === 'object') {
+            currentTelegramConfig = { ...currentTelegramConfig, ...val.telegramConfig };
+            localStorage.setItem(`vehicleex_tg_config_${currentSyncKey}`, JSON.stringify(currentTelegramConfig));
+            renderTgAlertUI();
+          }
+          const cloudList = Array.isArray(val.vehicles) ? val.vehicles : [];
+          await mergeCloudVehicles(cloudList);
         }
       });
       return;
@@ -1781,41 +2785,60 @@ async function fetchLatestCloudVehicles() {
   try {
     const res = await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`);
     const val = await res.json();
-    if (val && Array.isArray(val.vehicles)) {
-      isSyncingFromCloud = true;
-      await db.clearAll();
-      for (const cv of val.vehicles) {
-        await db.saveVehicle(cv, true);
+    if (val && !isSyncingFromCloud) {
+      if (val.alertConfig && typeof val.alertConfig === 'object') {
+        currentAlertConfig = { ...currentAlertConfig, ...val.alertConfig };
+        localStorage.setItem(`vehicleex_alert_config_${currentSyncKey}`, JSON.stringify(currentAlertConfig));
+        renderWaAlertUI();
       }
-      await loadVehicles();
-      isSyncingFromCloud = false;
+      if (val.telegramConfig && typeof val.telegramConfig === 'object') {
+        currentTelegramConfig = { ...currentTelegramConfig, ...val.telegramConfig };
+        localStorage.setItem(`vehicleex_tg_config_${currentSyncKey}`, JSON.stringify(currentTelegramConfig));
+        renderTgAlertUI();
+      }
+      const cloudList = Array.isArray(val.vehicles) ? val.vehicles : [];
+      await mergeCloudVehicles(cloudList);
     }
   } catch (err) {
     console.warn('Sync Fetch Notice:', err.message);
-    isSyncingFromCloud = false;
   }
 }
 
 async function pushCurrentVehiclesToCloud() {
-  if (!currentSyncKey || isSyncingFromCloud) return;
+  if (!currentSyncKey) {
+    return;
+  }
+  if (isSyncingFromCloud) {
+    console.warn('☁️ Cloud push postponed: currently syncing latest cloud data.');
+    return;
+  }
   try {
     const allVehicles = await db.getAllVehicles();
     const lightVehicles = getLightVehicles(allVehicles);
-    const payload = {
-      name: currentCompanyName,
+    const payload = sanitizeForCloud({
+      name: currentCompanyName || 'Company Workspace',
       vehicles: lightVehicles,
+      alertConfig: currentAlertConfig || null,
+      telegramConfig: currentTelegramConfig || null,
       updatedAt: new Date().toISOString()
-    };
+    });
 
+    // 1. Instant direct REST PUT - always reliable
+    await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    // 2. Realtime DB SDK update
     if (firebaseDb) {
-      await firebaseDb.ref('workspaces/' + currentSyncKey).set(payload);
-    } else {
-      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}.json`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      try {
+        await firebaseDb.ref('workspaces/' + currentSyncKey).set(payload);
+      } catch (sdkErr) {
+        console.warn('Firebase RTDB SDK sync notice:', sdkErr.message);
+      }
     }
+    console.log(`☁️ Cloud Workspace (${currentSyncKey}) updated with ${lightVehicles.length} vehicles.`);
   } catch (err) {
     console.error('Cloud Push Error:', err.message);
   }
@@ -1844,9 +2867,13 @@ function leaveCompanyWorkspace() {
     if (firebaseListenerRef) firebaseListenerRef.off();
     currentCompanyName = '';
     currentSyncKey = '';
+    currentAlertConfig = { enabled: false, phone: '', apiKey: '', noticeDays: 7, lastAlertDate: '' };
+    currentTelegramConfig = { enabled: false, botToken: '', chatId: '', noticeDays: 7, lastAlertDate: '' };
     localStorage.removeItem('vehicleex_company_name');
     localStorage.removeItem('vehicleex_sync_key');
     updateCompanyHeaderBadge();
+    renderWaAlertUI();
+    renderTgAlertUI();
     closeCompanyModal();
     alert('Disconnected from Company Workspace.');
   }
@@ -1861,5 +2888,667 @@ async function deleteVehicleFromCloud(id) {
   if (!currentSyncKey || isSyncingFromCloud) return;
   await pushCurrentVehiclesToCloud();
 }
+
+// ==================== WHATSAPP DAILY EXPIRED / EXPIRING ALERTS ====================
+
+function renderWaAlertUI() {
+  const toggle = document.getElementById('waAlertsToggle');
+  const body = document.getElementById('waConfigBody');
+  const phone = document.getElementById('waAlertPhone');
+  const apiKey = document.getElementById('waAlertApiKey');
+  const noticeDays = document.getElementById('waAlertNoticeDays');
+  const statusMsg = document.getElementById('waStatusMsg');
+
+  if (toggle) toggle.checked = !!currentAlertConfig.enabled;
+  if (body) body.style.display = currentAlertConfig.enabled ? 'block' : 'none';
+  if (phone) phone.value = currentAlertConfig.phone || '';
+  if (apiKey) apiKey.value = currentAlertConfig.apiKey || '';
+  if (noticeDays) noticeDays.value = currentAlertConfig.noticeDays || 7;
+  if (statusMsg) {
+    statusMsg.style.display = 'none';
+    statusMsg.textContent = '';
+  }
+}
+
+function toggleWaAlerts(checked) {
+  const body = document.getElementById('waConfigBody');
+  if (body) body.style.display = checked ? 'block' : 'none';
+  currentAlertConfig.enabled = !!checked;
+}
+
+async function saveWaAlertSettings() {
+  if (!currentSyncKey) {
+    alert('Please connect to a Company Workspace first.');
+    return;
+  }
+  const isEnabled = document.getElementById('waAlertsToggle')?.checked || false;
+  const phoneInput = document.getElementById('waAlertPhone')?.value.trim() || '';
+  const apiKeyInput = document.getElementById('waAlertApiKey')?.value.trim() || '';
+  const noticeDays = parseInt(document.getElementById('waAlertNoticeDays')?.value) || 7;
+  const statusMsg = document.getElementById('waStatusMsg');
+
+  if (isEnabled) {
+    if (!phoneInput) {
+      alert('Please enter Manager\'s WhatsApp Phone Number (with Country Code).\nExample: +919876543210');
+      return;
+    }
+    if (!apiKeyInput) {
+      alert('Please enter your CallMeBot Free WhatsApp API Key.\n\nClick "1-Click Get Key" to receive it on WhatsApp in 30 seconds.');
+      return;
+    }
+  }
+
+  currentAlertConfig = {
+    enabled: isEnabled,
+    phone: phoneInput,
+    apiKey: apiKeyInput,
+    noticeDays: noticeDays,
+    lastAlertDate: currentAlertConfig.lastAlertDate || ''
+  };
+
+  localStorage.setItem(`vehicleex_alert_config_${currentSyncKey}`, JSON.stringify(currentAlertConfig));
+
+  if (statusMsg) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-wa-status-msg info';
+    statusMsg.textContent = 'Saving settings to cloud...';
+  }
+
+  try {
+    // 1. Save alertConfig inside workspace
+    await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}/alertConfig.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentAlertConfig)
+    });
+
+    // 2. Register/unregister in alert_registry for daily cloud runner
+    if (isEnabled) {
+      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/alert_registry/${currentSyncKey}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(true)
+      });
+    } else {
+      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/alert_registry/${currentSyncKey}.json`, {
+        method: 'DELETE'
+      });
+    }
+
+    if (statusMsg) {
+      statusMsg.className = 'ws-wa-status-msg success';
+      statusMsg.textContent = '✅ WhatsApp Alert settings saved successfully!';
+      setTimeout(() => { if (statusMsg) statusMsg.style.display = 'none'; }, 4000);
+    }
+  } catch (err) {
+    console.error('Error saving alert settings:', err);
+    if (statusMsg) {
+      statusMsg.className = 'ws-wa-status-msg error';
+      statusMsg.textContent = '⚠️ Saved locally, cloud sync notice: ' + err.message;
+    }
+  }
+}
+
+async function sendCallMeBotMessage(phone, apiKey, text) {
+  let cleanPhone = phone.replace(/[^0-9+]/g, '');
+  if (cleanPhone.startsWith('+')) cleanPhone = cleanPhone.substring(1);
+  const encodedText = encodeURIComponent(text);
+  const url = `https://api.callmebot.com/whatsapp.php?phone=${cleanPhone}&text=${encodedText}&apikey=${apiKey}`;
+
+  try {
+    await fetch(url, { mode: 'no-cors' });
+    return { success: true };
+  } catch (err) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve({ success: true });
+      img.onerror = () => resolve({ success: true });
+      img.src = url;
+      setTimeout(() => resolve({ success: true }), 3000);
+    });
+  }
+}
+
+async function sendTestWhatsAppAlert() {
+  const phone = document.getElementById('waAlertPhone')?.value.trim();
+  const apiKey = document.getElementById('waAlertApiKey')?.value.trim();
+  const noticeDays = parseInt(document.getElementById('waAlertNoticeDays')?.value) || 7;
+  const statusMsg = document.getElementById('waStatusMsg');
+
+  if (!phone || !apiKey) {
+    alert('Please enter both WhatsApp Phone Number and CallMeBot API Key to test.');
+    return;
+  }
+
+  if (statusMsg) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-wa-status-msg info';
+    statusMsg.textContent = '🚀 Sending test message to WhatsApp...';
+  }
+
+  const companyName = currentCompanyName || 'Fleet Workspace';
+  const testMsg = `🔔 *Metro Vehicle App - Alert Test*\n\n` +
+    `🏢 *Company:* ${companyName}\n` +
+    `✅ *Status:* Connected Successfully!\n` +
+    `⚙️ *Advance Notice:* ${noticeDays} days\n` +
+    `📅 *Time:* ${new Date().toLocaleTimeString()}\n\n` +
+    `You will receive daily automated vehicle expiry alerts on this WhatsApp number.\n\n` +
+    `🌐 https://metro-vehicle.web.app`;
+
+  try {
+    await sendCallMeBotMessage(phone, apiKey, testMsg);
+    if (statusMsg) {
+      statusMsg.className = 'ws-wa-status-msg success';
+      statusMsg.textContent = '✅ Test alert dispatched to WhatsApp! Please check your WhatsApp messages in a few seconds.';
+    }
+  } catch (err) {
+    if (statusMsg) {
+      statusMsg.className = 'ws-wa-status-msg error';
+      statusMsg.textContent = '⚠️ Could not dispatch test alert: ' + err.message;
+    }
+  }
+}
+
+// ==================== ALERT CATEGORIZATION & FORMATTING HELPERS ====================
+
+const ALERT_NUM_ICONS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
+
+function getAlertNumIcon(idx) {
+  return ALERT_NUM_ICONS[idx] || `${idx + 1}.`;
+}
+
+function categorizeVehicleAlerts(vehicleList, noticeDays = 7) {
+  const expiredVehicles = [];
+  const expiringVehicles = [];
+  const now = new Date();
+  const nowMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const vList = Array.isArray(vehicleList) ? vehicleList : [];
+
+  vList.forEach(v => {
+    const expiredDocs = [];
+    const expiringDocs = [];
+
+    DOC_FIELDS.forEach(f => {
+      if (!f.isExpiry) return;
+      const val = v[f.key];
+      if (!val) return;
+
+      const target = new Date(val);
+      if (isNaN(target.getTime())) return;
+
+      const targetMidnight = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+      const diffDays = Math.ceil((targetMidnight - nowMidnight) / (1000 * 60 * 60 * 24));
+      const dateStr = target.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+      if (diffDays <= 0) {
+        const daysAgo = Math.abs(diffDays);
+        const statusText = daysAgo === 0 ? 'Expired Today' : `Expired ${daysAgo}d ago`;
+        expiredDocs.push({
+          key: f.key,
+          label: f.label,
+          diffDays,
+          statusText,
+          dateStr
+        });
+      } else if (diffDays <= noticeDays) {
+        const statusText = diffDays === 1 ? 'Expires Tomorrow' : `Expires in ${diffDays}d`;
+        expiringDocs.push({
+          key: f.key,
+          label: f.label,
+          diffDays,
+          statusText,
+          dateStr
+        });
+      }
+    });
+
+    const regNo = v.vehicleNo || 'Unknown';
+    const makeModel = [v.make, v.model].filter(Boolean).join(' ') || '';
+
+    if (expiredDocs.length > 0) {
+      expiredVehicles.push({
+        regNo,
+        makeModel,
+        docs: expiredDocs
+      });
+    }
+
+    if (expiringDocs.length > 0) {
+      expiringVehicles.push({
+        regNo,
+        makeModel,
+        docs: expiringDocs
+      });
+    }
+  });
+
+  return { expiredVehicles, expiringVehicles };
+}
+
+function buildWhatsAppAlertText(companyTitle, expiredVehicles, expiringVehicles, noticeDays) {
+  const todayStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  let msg = `🚨 *VEHICLE EXPIRY ALERT* 🚨\n`;
+  msg += `🏢 *Company:* ${companyTitle}\n`;
+  msg += `📅 *Date:* ${todayStr}\n`;
+
+  if (expiredVehicles.length > 0) {
+    msg += `\n🔴 *EXPIRED DOCUMENTS (${expiredVehicles.length} Vehicles):*\n`;
+    const slice = expiredVehicles.slice(0, 6);
+    slice.forEach((item, idx) => {
+      msg += `${getAlertNumIcon(idx)} *${item.regNo}*${item.makeModel ? ` (${item.makeModel})` : ''}\n`;
+      item.docs.forEach(d => {
+        msg += `   ❌ ${d.label}: *${d.statusText}* (${d.dateStr})\n`;
+      });
+      msg += `\n`;
+    });
+    if (expiredVehicles.length > 6) {
+      msg += `   _...and ${expiredVehicles.length - 6} more expired vehicle(s)_\n\n`;
+    }
+  }
+
+  if (expiringVehicles.length > 0) {
+    msg += `🟡 *EXPIRING WITHIN ${noticeDays} DAYS (${expiringVehicles.length} Vehicles):*\n`;
+    const slice = expiringVehicles.slice(0, 6);
+    slice.forEach((item, idx) => {
+      msg += `${getAlertNumIcon(idx)} *${item.regNo}*${item.makeModel ? ` (${item.makeModel})` : ''}\n`;
+      item.docs.forEach(d => {
+        msg += `   ⚠️ ${d.label}: *${d.statusText}* (${d.dateStr})\n`;
+      });
+      msg += `\n`;
+    });
+    if (expiringVehicles.length > 6) {
+      msg += `   _...and ${expiringVehicles.length - 6} more expiring vehicle(s)_\n\n`;
+    }
+  }
+
+  msg += `📱 _Please renew expired & upcoming documents on time._\n`;
+  msg += `🌐 https://metro-vehicle.web.app`;
+  return msg;
+}
+
+async function sendTodayExpiryAlertWhatsApp(isAutomated = false) {
+  const phone = currentAlertConfig.phone || document.getElementById('waAlertPhone')?.value.trim();
+  const apiKey = currentAlertConfig.apiKey || document.getElementById('waAlertApiKey')?.value.trim();
+  const noticeDays = currentAlertConfig.noticeDays || parseInt(document.getElementById('waAlertNoticeDays')?.value) || 7;
+  const statusMsg = document.getElementById('waStatusMsg');
+
+  if (!phone || !apiKey) {
+    if (!isAutomated) alert('Please configure and save your WhatsApp Phone Number and API Key first.');
+    return;
+  }
+
+  const { expiredVehicles, expiringVehicles } = categorizeVehicleAlerts(vehicles, noticeDays);
+  const totalAlertVehicles = expiredVehicles.length + expiringVehicles.length;
+
+  if (totalAlertVehicles === 0) {
+    if (!isAutomated) {
+      if (statusMsg) {
+        statusMsg.style.display = 'block';
+        statusMsg.className = 'ws-wa-status-msg info';
+        statusMsg.textContent = 'ℹ️ All vehicle documents are currently valid! No alerts to send today.';
+      } else {
+        alert('ℹ️ All vehicle documents are currently valid! No alerts to send today.');
+      }
+    }
+    return;
+  }
+
+  if (statusMsg && !isAutomated) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-wa-status-msg info';
+    statusMsg.textContent = `🚀 Preparing alert (${expiredVehicles.length} expired, ${expiringVehicles.length} expiring in ${noticeDays}d)...`;
+  }
+
+  const companyTitle = currentCompanyName || 'Fleet Workspace';
+  const msg = buildWhatsAppAlertText(companyTitle, expiredVehicles, expiringVehicles, noticeDays);
+
+  try {
+    await sendCallMeBotMessage(phone, apiKey, msg);
+    const todayIso = new Date().toISOString().split('T')[0];
+    currentAlertConfig.lastAlertDate = todayIso;
+    localStorage.setItem(`vehicleex_alert_config_${currentSyncKey}`, JSON.stringify(currentAlertConfig));
+
+    if (statusMsg && !isAutomated) {
+      statusMsg.className = 'ws-wa-status-msg success';
+      statusMsg.textContent = `✅ Expiry alert (${expiredVehicles.length} expired, ${expiringVehicles.length} expiring) sent to WhatsApp!`;
+    }
+  } catch (err) {
+    if (statusMsg && !isAutomated) {
+      statusMsg.className = 'ws-wa-status-msg error';
+      statusMsg.textContent = '⚠️ Error sending alert: ' + err.message;
+    }
+  }
+}
+
+// ==================== TELEGRAM DAILY EXPIRED / EXPIRING ALERTS ====================
+
+function renderTgAlertUI() {
+  const toggle = document.getElementById('tgAlertsToggle');
+  const body = document.getElementById('tgConfigBody');
+  const token = document.getElementById('tgBotToken');
+  const chatId = document.getElementById('tgChatId');
+  const noticeDays = document.getElementById('tgNoticeDays');
+  const statusMsg = document.getElementById('tgStatusMsg');
+
+  if (toggle) toggle.checked = !!currentTelegramConfig.enabled;
+  if (body) body.style.display = currentTelegramConfig.enabled ? 'block' : 'none';
+  if (token) token.value = currentTelegramConfig.botToken || '';
+  if (chatId) chatId.value = currentTelegramConfig.chatId || '';
+  if (noticeDays) noticeDays.value = currentTelegramConfig.noticeDays || 7;
+  if (statusMsg) {
+    statusMsg.style.display = 'none';
+    statusMsg.textContent = '';
+  }
+}
+
+function toggleTgAlerts(checked) {
+  const body = document.getElementById('tgConfigBody');
+  if (body) body.style.display = checked ? 'block' : 'none';
+  currentTelegramConfig.enabled = !!checked;
+}
+
+async function autoDetectTelegramChatId() {
+  const tokenInput = document.getElementById('tgBotToken');
+  const botToken = tokenInput ? tokenInput.value.trim() : '';
+  const statusMsg = document.getElementById('tgStatusMsg');
+
+  if (!botToken) {
+    alert('Please enter your Telegram Bot Token first.\n\nClick "1-Click @BotFather" to create a bot and get the HTTP API token.');
+    return;
+  }
+
+  if (statusMsg) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-tg-status-msg info';
+    statusMsg.textContent = '🔍 Connecting to Telegram to check for recent messages...';
+  }
+
+  try {
+    // 1. Verify Bot Token
+    const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+    const meData = await meRes.json();
+    if (!meData.ok) {
+      throw new Error('Invalid Bot Token! Please double-check the token from @BotFather.');
+    }
+    const botUser = meData.result.username;
+
+    // 2. Fetch recent updates
+    const updRes = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates`);
+    const updData = await updRes.json();
+
+    if (!updData.ok || !updData.result || updData.result.length === 0) {
+      if (statusMsg) {
+        statusMsg.className = 'ws-tg-status-msg error';
+        statusMsg.innerHTML = `⚠️ No recent messages found!<br>1. Open your bot: <a href="https://t.me/${botUser}" target="_blank" style="color:#0088cc; font-weight:700;">@${botUser}</a> in Telegram.<br>2. Press <b>START</b> (or add it to your group and send a message).<br>3. Then click <b>'Auto-Detect'</b> again!`;
+      }
+      return;
+    }
+
+    // Get the most recent update
+    const updates = updData.result;
+    const lastUpdate = updates[updates.length - 1];
+    const message = lastUpdate.message || lastUpdate.channel_post || lastUpdate.my_chat_member;
+
+    if (!message || !message.chat) {
+      throw new Error('Could not find chat information in recent messages.');
+    }
+
+    const chatId = message.chat.id;
+    const chatTitle = message.chat.title || message.chat.first_name || 'Personal Chat';
+    const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
+
+    document.getElementById('tgChatId').value = chatId;
+    currentTelegramConfig.chatId = String(chatId);
+
+    if (statusMsg) {
+      statusMsg.className = 'ws-tg-status-msg success';
+      statusMsg.textContent = `✅ Successfully connected to ${isGroup ? 'Group' : 'User'}: "${chatTitle}" (Chat ID: ${chatId})! Click 'Save Settings' to save.`;
+    }
+  } catch (err) {
+    if (statusMsg) {
+      statusMsg.className = 'ws-tg-status-msg error';
+      statusMsg.textContent = '⚠️ ' + err.message;
+    }
+  }
+}
+
+async function saveTgAlertSettings() {
+  if (!currentSyncKey) {
+    alert('Please connect to a Company Workspace first.');
+    return;
+  }
+  const isEnabled = document.getElementById('tgAlertsToggle')?.checked || false;
+  const tokenInput = document.getElementById('tgBotToken')?.value.trim() || '';
+  const chatIdInput = document.getElementById('tgChatId')?.value.trim() || '';
+  const noticeDays = parseInt(document.getElementById('tgNoticeDays')?.value) || 7;
+  const statusMsg = document.getElementById('tgStatusMsg');
+
+  if (isEnabled) {
+    if (!tokenInput) {
+      alert('Please enter your Telegram Bot Token.\n\nClick "1-Click @BotFather" to create a bot in Telegram.');
+      return;
+    }
+    if (!chatIdInput) {
+      alert('Please enter or Auto-Detect your Telegram Chat ID.\n\nTap START in your bot and click "Auto-Detect".');
+      return;
+    }
+  }
+
+  currentTelegramConfig = {
+    enabled: isEnabled,
+    botToken: tokenInput,
+    chatId: chatIdInput,
+    noticeDays: noticeDays,
+    lastAlertDate: currentTelegramConfig.lastAlertDate || ''
+  };
+
+  localStorage.setItem(`vehicleex_tg_config_${currentSyncKey}`, JSON.stringify(currentTelegramConfig));
+
+  if (statusMsg) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-tg-status-msg info';
+    statusMsg.textContent = 'Saving settings to cloud...';
+  }
+
+  try {
+    // 1. Save telegramConfig in workspace
+    await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}/telegramConfig.json`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentTelegramConfig)
+    });
+
+    // 2. Register/unregister in alert_registry for daily cloud runner
+    if (isEnabled || currentAlertConfig.enabled) {
+      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/alert_registry/${currentSyncKey}.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(true)
+      });
+    } else {
+      await fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/alert_registry/${currentSyncKey}.json`, {
+        method: 'DELETE'
+      });
+    }
+
+    if (statusMsg) {
+      statusMsg.className = 'ws-tg-status-msg success';
+      statusMsg.textContent = '✅ Telegram Alert settings saved successfully!';
+      setTimeout(() => { if (statusMsg) statusMsg.style.display = 'none'; }, 4000);
+    }
+  } catch (err) {
+    console.error('Error saving Telegram alert settings:', err);
+    if (statusMsg) {
+      statusMsg.className = 'ws-tg-status-msg error';
+      statusMsg.textContent = '⚠️ Saved locally, cloud sync notice: ' + err.message;
+    }
+  }
+}
+
+async function sendTestTelegramAlert() {
+  const botToken = document.getElementById('tgBotToken')?.value.trim();
+  const chatId = document.getElementById('tgChatId')?.value.trim();
+  const noticeDays = parseInt(document.getElementById('tgNoticeDays')?.value) || 7;
+  const statusMsg = document.getElementById('tgStatusMsg');
+
+  if (!botToken || !chatId) {
+    alert('Please enter both Bot Token and Chat ID to test.');
+    return;
+  }
+
+  if (statusMsg) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-tg-status-msg info';
+    statusMsg.textContent = '🚀 Sending test message to Telegram...';
+  }
+
+  const companyName = currentCompanyName || 'Fleet Workspace';
+  const testMsg = `🔔 <b>Metro Vehicle App - Telegram Alert Test</b>\n\n` +
+    `🏢 <b>Company:</b> ${escapeHtml(companyName)}\n` +
+    `✅ <b>Status:</b> Connected Successfully!\n` +
+    `⚙️ <b>Advance Notice:</b> ${noticeDays} days\n` +
+    `📅 <b>Time:</b> ${new Date().toLocaleTimeString()}\n\n` +
+    `Daily automated vehicle expiry alerts will be delivered here.\n\n` +
+    `🌐 <a href="https://metro-vehicle.web.app">Open App</a>`;
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: testMsg,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      throw new Error(data.description || 'Failed to send message');
+    }
+
+    if (statusMsg) {
+      statusMsg.className = 'ws-tg-status-msg success';
+      statusMsg.textContent = '✅ Test alert delivered to Telegram! Check your Telegram messages.';
+    }
+  } catch (err) {
+    if (statusMsg) {
+      statusMsg.className = 'ws-tg-status-msg error';
+      statusMsg.textContent = '⚠️ Could not dispatch test alert: ' + err.message;
+    }
+  }
+}
+
+function buildTelegramAlertHtml(companyTitle, expiredVehicles, expiringVehicles, noticeDays) {
+  const todayStr = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  let msg = `🚨 <b>VEHICLE EXPIRY ALERT</b> 🚨\n`;
+  msg += `🏢 <b>Company:</b> ${escapeHtml(companyTitle)}\n`;
+  msg += `📅 <b>Date:</b> ${todayStr}\n`;
+
+  if (expiredVehicles.length > 0) {
+    msg += `\n🔴 <b>EXPIRED DOCUMENTS (${expiredVehicles.length} Vehicles):</b>\n`;
+    const slice = expiredVehicles.slice(0, 10);
+    slice.forEach((item, idx) => {
+      msg += `${getAlertNumIcon(idx)} <b>${escapeHtml(item.regNo)}</b>${item.makeModel ? ` (${escapeHtml(item.makeModel)})` : ''}\n`;
+      item.docs.forEach(d => {
+        msg += `   ❌ ${escapeHtml(d.label)}: <b>${escapeHtml(d.statusText)}</b> (${escapeHtml(d.dateStr)})\n`;
+      });
+      msg += `\n`;
+    });
+    if (expiredVehicles.length > 10) {
+      msg += `   <i>...and ${expiredVehicles.length - 10} more expired vehicle(s)</i>\n\n`;
+    }
+  }
+
+  if (expiringVehicles.length > 0) {
+    msg += `🟡 <b>EXPIRING WITHIN ${noticeDays} DAYS (${expiringVehicles.length} Vehicles):</b>\n`;
+    const slice = expiringVehicles.slice(0, 10);
+    slice.forEach((item, idx) => {
+      msg += `${getAlertNumIcon(idx)} <b>${escapeHtml(item.regNo)}</b>${item.makeModel ? ` (${escapeHtml(item.makeModel)})` : ''}\n`;
+      item.docs.forEach(d => {
+        msg += `   ⚠️ ${escapeHtml(d.label)}: <b>${escapeHtml(d.statusText)}</b> (${escapeHtml(d.dateStr)})\n`;
+      });
+      msg += `\n`;
+    });
+    if (expiringVehicles.length > 10) {
+      msg += `   <i>...and ${expiringVehicles.length - 10} more expiring vehicle(s)</i>\n\n`;
+    }
+  }
+
+  msg += `📱 <i>Please renew expired & upcoming documents on time.</i>\n`;
+  msg += `🌐 <a href="https://metro-vehicle.web.app">Open Metro Vehicle App</a>`;
+  return msg;
+}
+
+async function sendTodayExpiryAlertTelegram(isAutomated = false) {
+  const botToken = currentTelegramConfig.botToken || document.getElementById('tgBotToken')?.value.trim();
+  const chatId = currentTelegramConfig.chatId || document.getElementById('tgChatId')?.value.trim();
+  const noticeDays = currentTelegramConfig.noticeDays || parseInt(document.getElementById('tgNoticeDays')?.value) || 7;
+  const statusMsg = document.getElementById('tgStatusMsg');
+
+  if (!botToken || !chatId) {
+    if (!isAutomated) alert('Please configure and save your Telegram Bot Token and Chat ID first.');
+    return;
+  }
+
+  const { expiredVehicles, expiringVehicles } = categorizeVehicleAlerts(vehicles, noticeDays);
+  const totalAlertVehicles = expiredVehicles.length + expiringVehicles.length;
+
+  if (totalAlertVehicles === 0) {
+    if (!isAutomated) {
+      if (statusMsg) {
+        statusMsg.style.display = 'block';
+        statusMsg.className = 'ws-tg-status-msg info';
+        statusMsg.textContent = 'ℹ️ All vehicle documents are currently valid! No alerts to send today.';
+      } else {
+        alert('ℹ️ All vehicle documents are currently valid! No alerts to send today.');
+      }
+    }
+    return;
+  }
+
+  if (statusMsg && !isAutomated) {
+    statusMsg.style.display = 'block';
+    statusMsg.className = 'ws-tg-status-msg info';
+    statusMsg.textContent = `🚀 Preparing alert (${expiredVehicles.length} expired, ${expiringVehicles.length} expiring in ${noticeDays}d)...`;
+  }
+
+  const companyTitle = currentCompanyName || 'Fleet Workspace';
+  const msg = buildTelegramAlertHtml(companyTitle, expiredVehicles, expiringVehicles, noticeDays);
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: msg,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      throw new Error(data.description || 'Failed to send message');
+    }
+
+    const todayIso = new Date().toISOString().split('T')[0];
+    currentTelegramConfig.lastAlertDate = todayIso;
+    localStorage.setItem(`vehicleex_tg_config_${currentSyncKey}`, JSON.stringify(currentTelegramConfig));
+
+    if (statusMsg && !isAutomated) {
+      statusMsg.className = 'ws-tg-status-msg success';
+      statusMsg.textContent = `✅ Expiry alert (${expiredVehicles.length} expired, ${expiringVehicles.length} expiring) delivered to Telegram!`;
+    }
+  } catch (err) {
+    if (statusMsg && !isAutomated) {
+      statusMsg.className = 'ws-tg-status-msg error';
+      statusMsg.textContent = '⚠️ Error sending alert: ' + err.message;
+    }
+  }
+}
+
+
 
 

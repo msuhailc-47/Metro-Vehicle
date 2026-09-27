@@ -1,10 +1,11 @@
-// Service Worker v5 - PWA fullscreen + manifest fix
-const CACHE_NAME = 'vehicle-ex-v5';
+// Service Worker v23 - Expiring Soon Filter Fix
+const CACHE_NAME = 'vehicle-ex-v23';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './xlsx.full.min.js',
   './manifest.json'
 ];
 
@@ -47,5 +48,18 @@ self.addEventListener('fetch', (event) => {
           return cachedResponse || caches.match('./index.html');
         });
       })
+  );
+});
+
+// Handle notification click to open / focus the app window
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if ('focus' in client) return client.focus();
+      }
+      if (clients.openWindow) return clients.openWindow('./');
+    })
   );
 });

@@ -1,0 +1,15 @@
+{
+  "rules": {
+    "workspaces": {
+      "$workspaceId": {
+        ".read": true,
+        ".write": true
+      }
+    },
+    "alert_registry": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}
+

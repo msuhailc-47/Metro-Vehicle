@@ -19,22 +19,22 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   
+  <!-- SheetJS Library for genuine Excel (.xlsx) file generation -->
+  <script defer src="xlsx.full.min.js"></script>
   <!-- JSZip Library for downloading all documents as a ZIP package -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <!-- PDF.js for converting PDFs to images for OCR -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
   
   <!-- Tesseract.js OCR Engine for Smart Document Scanning -->
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 
-
-  <!-- Firebase SDKs for Cloud Sync -->
-  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.9.0/firebase-firestore-compat.js"></script>
+  <!-- Firebase SDKs for Cloud Sync (Database only, no unused Firestore) -->
+  <script defer src="https://www.gstatic.com/firebasejs/10.9.0/firebase-app-compat.js"></script>
+  <script defer src="https://www.gstatic.com/firebasejs/10.9.0/firebase-database-compat.js"></script>
 
   <!-- App Styles -->
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
 
@@ -86,7 +86,7 @@
     
     <!-- Metrics Dashboard -->
     <section class="metrics-grid">
-      <div class="metric-card">
+      <div class="metric-card" onclick="setFilter('all')" style="cursor: pointer;" title="Show All Vehicles">
         <div class="metric-icon blue">🚗</div>
         <div class="metric-info">
           <h4>Total Vehicles</h4>
@@ -94,7 +94,7 @@
         </div>
       </div>
 
-      <div class="metric-card">
+      <div class="metric-card" onclick="setFilter('expired')" style="cursor: pointer;" title="Show Expired Vehicles">
         <div class="metric-icon red">🚨</div>
         <div class="metric-info">
           <h4>Expired Docs</h4>
@@ -102,7 +102,7 @@
         </div>
       </div>
 
-      <div class="metric-card">
+      <div class="metric-card" onclick="setFilter('expiring')" style="cursor: pointer;" title="Show Expiring Soon Vehicles">
         <div class="metric-icon amber">⚠️</div>
         <div class="metric-info">
           <h4>Expiring &lt; 30 Days</h4>
@@ -110,7 +110,7 @@
         </div>
       </div>
 
-      <div class="metric-card">
+      <div class="metric-card" onclick="setFilter('valid')" style="cursor: pointer;" title="Show Valid Vehicles">
         <div class="metric-icon green">✅</div>
         <div class="metric-info">
           <h4>Valid Documents</h4>
@@ -135,7 +135,7 @@
         <button class="pill-btn" data-filter="valid">✅ Valid</button>
       </div>
 
-      <div style="display: flex; gap: 0.5rem;">
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <button class="primary-btn" id="openAddVehicleModalBtn">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -143,12 +143,25 @@
           Add Vehicle
         </button>
 
-        <button class="secondary-btn" id="exportCsvBtn" title="Export Excel / CSV">
-          📊 CSV
+        <button class="secondary-btn" id="viewToggleBtn" title="Toggle Card / Table View" onclick="toggleViewMode()">
+          📋 Table View
         </button>
+
+        <button class="secondary-btn" id="exportCsvBtn" title="Export Microsoft Excel (.xlsx)" onclick="exportVehiclesExcel()">
+          📗 Export Excel
+        </button>
+
+        <button class="secondary-btn" id="importExcelBtn" title="Import Vehicles from Excel (.xlsx / .csv)" onclick="document.getElementById('importExcelInput').click()">
+          📥 Import Excel
+        </button>
+        <input type="file" id="importExcelInput" accept=".xlsx,.xls,.csv" style="display: none;" onchange="handleExcelImport(event)">
 
         <button class="secondary-btn" id="openCalendarBtn" title="Expiry Calendar" onclick="openCalendarModal()">
           📅 Calendar
+        </button>
+
+        <button class="secondary-btn" id="exportDbBtn" title="Backup Database (JSON)">
+          💾 Backup
         </button>
       </div>
     </section>
@@ -200,38 +213,77 @@
             </div>
 
             <div class="form-group">
-              <label for="regDate">Registration Date</label>
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="regDate">Registration Date</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('regDate', 'today')">Today</button>
+                </div>
+              </div>
               <input type="date" id="regDate">
             </div>
 
             <div class="form-group">
-              <label for="fitnessUpto">Fitness Upto Date & Time</label>
-              <input type="datetime-local" id="fitnessUpto">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="fitnessUpto">Fitness Upto Date</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('fitnessUpto', '+1y')">+1 Yr</button>
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('fitnessUpto', '+2y')">+2 Yrs</button>
+                </div>
+              </div>
+              <input type="date" id="fitnessUpto">
             </div>
 
             <div class="form-group">
-              <label for="insuranceUpto">Insurance Upto Date & Time</label>
-              <input type="datetime-local" id="insuranceUpto">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="insuranceUpto">Insurance Upto Date</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('insuranceUpto', '+1y')">+1 Yr</button>
+                </div>
+              </div>
+              <input type="date" id="insuranceUpto">
             </div>
 
             <div class="form-group">
-              <label for="taxUpto">Tax Upto Date & Time</label>
-              <input type="datetime-local" id="taxUpto">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="taxUpto">Tax Upto Date</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('taxUpto', 'quarter')" title="Next quarter end: Mar 31, Jun 30, Sep 30, Dec 31">Quarter End</button>
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('taxUpto', '+1y')">+1 Yr</button>
+                </div>
+              </div>
+              <input type="date" id="taxUpto">
             </div>
 
             <div class="form-group">
-              <label for="permitUpto">Permit Upto Date & Time</label>
-              <input type="datetime-local" id="permitUpto">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="permitUpto">Permit Upto Date</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('permitUpto', '+5y')">+5 Yrs</button>
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('permitUpto', '+1y')">+1 Yr</button>
+                </div>
+              </div>
+              <input type="date" id="permitUpto">
             </div>
 
             <div class="form-group">
-              <label for="nationalPermit">National Permit Upto</label>
-              <input type="datetime-local" id="nationalPermit">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="nationalPermit">National Permit Upto</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('nationalPermit', '+1y')">+1 Yr</button>
+                </div>
+              </div>
+              <input type="date" id="nationalPermit">
             </div>
 
             <div class="form-group">
-              <label for="pucc">PUCC Upto Date & Time</label>
-              <input type="datetime-local" id="pucc">
+              <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label for="pucc">PUCC Upto Date</label>
+                <div class="date-quick-chips">
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('pucc', '+6m')">+6 Mos</button>
+                  <button type="button" class="date-chip-btn" onclick="setQuickDate('pucc', '+1y')">+1 Yr</button>
+                </div>
+              </div>
+              <input type="date" id="pucc">
             </div>
 
             <div class="form-group">
@@ -272,8 +324,9 @@
 
           </div>
 
-          <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem;">
+          <div style="margin-top: 1.5rem; display: flex; justify-content: flex-end; gap: 0.6rem; flex-wrap: wrap;">
             <button type="button" class="secondary-btn" id="cancelVehicleModalBtn" onclick="closeVehicleModal()">Cancel</button>
+            <button type="button" class="secondary-btn" id="saveAndAddNextBtn" onclick="handleSaveAndAddNext()" style="font-weight: 700; color: var(--primary); border-color: var(--primary);">💾 Save & Add Next</button>
             <button type="submit" class="primary-btn" id="saveVehicleBtn">Save Record</button>
           </div>
         </form>
@@ -324,14 +377,14 @@
       </div>
       <div class="modal-body">
         
-        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 0.5rem;">
-          <h4 style="font-size: 0.95rem; color: var(--text-muted);">Attached Files</h4>
-          <div style="display: flex; gap: 0.5rem;">
-            <button class="secondary-btn" id="ocrScanAllBtn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
+        <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 0.85rem; gap: 0.5rem;">
+          <h4 style="font-size: 0.9rem; color: var(--text-muted); margin: 0;">Attached Files</h4>
+          <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+            <button class="secondary-btn" id="ocrScanAllBtn" style="padding: 0.35rem 0.65rem; font-size: 0.8rem;">
               🤖 AI Scan
             </button>
-            <button class="primary-btn" id="downloadAllZipBtn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
-              📦 Download All (ZIP)
+            <button class="primary-btn" id="downloadAllZipBtn" style="padding: 0.35rem 0.65rem; font-size: 0.8rem;">
+              📦 Download ZIP
             </button>
           </div>
         </div>
@@ -417,7 +470,7 @@
       <div class="modal-body" style="text-align: center;">
         <div id="ocrStatus" style="margin-bottom: 1rem;">
           <div class="ocr-spinner"></div>
-          <p style="margin-top: 1rem; font-weight: 600;">Scanning document...</p>
+          <p style="margin-top: 1rem; font-weight: 600;" id="ocrStatusText">Scanning document...</p>
           <p style="font-size: 0.85rem; color: var(--text-muted);">AI is reading text from your document</p>
         </div>
         <div id="ocrProgress" style="width: 100%; height: 8px; background: var(--bg-main); border-radius: 4px; overflow: hidden; margin-bottom: 1rem;">
@@ -432,73 +485,277 @@
 
   <!-- 8. Company Group Sync Modal -->
   <div class="modal-overlay" id="companyModal">
-    <div class="modal-box" style="max-width: 440px;">
+    <div class="modal-box" style="max-width: 480px;">
       <div class="modal-header">
-        <h3 class="modal-title">🏢 Company Sync Workspace</h3>
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 1.4rem;">🏢</span>
+          <div>
+            <h3 class="modal-title" style="font-size: 1.15rem; font-weight: 800;">Company Cloud Workspace</h3>
+            <p style="font-size: 0.75rem; color: var(--text-muted); margin: 0;">Multi-device real-time sync for fleet management</p>
+          </div>
+        </div>
         <button class="close-btn" id="closeCompanyModalBtn" onclick="closeCompanyModal()">&times;</button>
       </div>
-      <div class="modal-body">
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Share vehicle records live between PC & mobile phones for the same company.
-        </p>
 
-        <!-- Active Sync Status Badge -->
-        <div id="activeSyncBadge" style="display: none; background: linear-gradient(135deg, rgba(16,185,129,0.15), rgba(37,99,235,0.15)); border: 1.5px solid var(--success); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 1.25rem;">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
-            <span style="font-weight: 800; color: var(--success); font-size: 0.95rem;">🟢 Live Connected</span>
-            <span id="activeCompanyName" style="font-weight: 700; font-size: 0.9rem; color: var(--text-main);"></span>
+      <div class="modal-body" style="padding: 1.25rem;">
+        
+        <!-- VIEW 1: When ALREADY CONNECTED (Active Company Dashboard) -->
+        <div id="companyActiveView" style="display: none;">
+          <div class="ws-connected-card">
+            <div class="ws-card-header">
+              <div class="ws-avatar">🏢</div>
+              <div class="ws-info">
+                <div class="ws-name" id="activeCompanyName">MMM</div>
+                <div class="ws-status"><span class="pulse-dot"></span> Real-time Sync Active</div>
+              </div>
+              <span class="ws-badge">Live</span>
+            </div>
+
+            <div class="ws-key-section">
+              <div class="ws-key-label">
+                <span>🔑 Staff Access Sync Key</span>
+                <small>Share this with staff to connect</small>
+              </div>
+              <div class="ws-key-box" onclick="copySyncKey()" title="Click to copy Sync Key">
+                <span class="ws-key-val" id="activeSyncKey">MMM-1407</span>
+                <button type="button" class="ws-copy-btn" onclick="copySyncKey(event)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="ws-stats-row">
+              <div class="ws-stat-chip">
+                <span class="stat-num" id="activeWsVehicleCount">15</span>
+                <span class="stat-label">Cloud Vehicles</span>
+              </div>
+              <div class="ws-stat-chip">
+                <span class="stat-num">⚡ Live</span>
+                <span class="stat-label">Cloudinary Media</span>
+              </div>
+            </div>
+
+            <div class="ws-actions-grid">
+              <button type="button" class="ws-btn ws-btn-share" onclick="shareSyncKeyWhatsApp()">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                <span>Invite Staff via WhatsApp</span>
+              </button>
+              <button type="button" class="ws-btn ws-btn-sync" onclick="manualSyncRefresh()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                <span>Force Cloud Refresh</span>
+              </button>
+              <button type="button" class="ws-btn ws-btn-push" id="syncLocalBtn" onclick="syncLocalVehiclesToCompany()">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span>Upload Local Records</span>
+              </button>
+            </div>
+
+            <!-- Telegram Automated Daily Alerts Section (100% Free & Unlimited) -->
+            <div class="ws-tg-section">
+              <div class="ws-tg-header">
+                <div class="ws-tg-title-wrap">
+                  <div class="ws-tg-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 0 0-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.75-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="ws-tg-title">Daily Telegram Alerts <span style="font-size: 0.65rem; background: rgba(0,136,204,0.2); color: #0088cc; padding: 1px 6px; border-radius: 4px; font-weight: 800;">Recommended</span></div>
+                    <div class="ws-tg-subtitle">100% Free daily alerts to Manager or Staff Group</div>
+                  </div>
+                </div>
+                <label class="ws-toggle-switch">
+                  <input type="checkbox" id="tgAlertsToggle" onchange="toggleTgAlerts(this.checked)">
+                  <span class="ws-toggle-slider" style="background-color: var(--border-color, #cbd5e1);"></span>
+                </label>
+              </div>
+
+              <div id="tgConfigBody" class="ws-tg-body" style="display: none;">
+                <div class="form-group" style="margin-bottom: 0.6rem;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <label class="ws-tg-label" style="margin: 0;">Telegram Bot Token *</label>
+                    <a href="https://t.me/BotFather" target="_blank" class="ws-tg-link" rel="noopener">
+                      🤖 1-Click @BotFather
+                    </a>
+                  </div>
+                  <input type="text" id="tgBotToken" class="ws-tg-input" placeholder="e.g. 7890123456:AAFd4e8x...yZ">
+                  <span class="ws-tg-hint">Tap '@BotFather' in Telegram, send <b>/newbot</b>, & paste received HTTP API Token here.</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0.6rem;">
+                  <label class="ws-tg-label">Telegram Chat ID (Personal or Group) *</label>
+                  <div style="display: flex; gap: 0.4rem;">
+                    <input type="text" id="tgChatId" class="ws-tg-input" placeholder="e.g. 123456789 or -100..." style="flex: 1;">
+                    <button type="button" class="ws-tg-detect-btn" onclick="autoDetectTelegramChatId()" title="Auto-detect Chat ID from recent bot message">
+                      🔍 Auto-Detect
+                    </button>
+                  </div>
+                  <span class="ws-tg-hint">Open your bot in Telegram, tap <b>START</b> (or send msg in group), then tap <b>'Auto-Detect'</b>!</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0.8rem;">
+                  <label class="ws-tg-label">Advance Expiry Notice</label>
+                  <select id="tgNoticeDays" class="ws-tg-input">
+                    <option value="7" selected>7 Days to Expire + Expired (Recommended)</option>
+                    <option value="3">3 Days to Expire + Expired</option>
+                    <option value="1">1 Day to Expire + Expired</option>
+                    <option value="15">15 Days to Expire + Expired</option>
+                  </select>
+                </div>
+
+                <div class="ws-wa-btns-row">
+                  <button type="button" class="ws-btn-save-tg" onclick="saveTgAlertSettings()">
+                    💾 Save Settings
+                  </button>
+                  <button type="button" class="ws-btn-test-tg" onclick="sendTestTelegramAlert()">
+                    🧪 Test Alert
+                  </button>
+                  <button type="button" class="ws-btn-dispatch-tg" onclick="sendTodayExpiryAlertTelegram()" title="Send today's vehicle expiry summary to Telegram immediately">
+                    📤 Send Today's Alert
+                  </button>
+                </div>
+
+                <div id="tgStatusMsg" class="ws-tg-status-msg" style="display: none;"></div>
+              </div>
+            </div>
+
+            <!-- WhatsApp Automated Daily Alerts Section -->
+            <div class="ws-wa-section">
+              <div class="ws-wa-header">
+                <div class="ws-wa-title-wrap">
+                  <div class="ws-wa-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 15 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.53 7.34C9.34 7.34 9.04 7.41 8.78 7.69C8.52 7.97 7.78 8.66 7.78 10.07C7.78 11.48 8.81 12.83 8.95 13.02C9.09 13.21 11.11 16.32 14.21 17.66C14.95 17.98 15.53 18.17 15.98 18.31C16.72 18.55 17.4 18.52 17.93 18.44C18.52 18.35 19.75 17.7 20.01 16.97C20.27 16.23 20.27 15.6 20.19 15.47C20.12 15.34 19.93 15.27 19.65 15.13C19.37 14.99 18.01 14.32 17.76 14.23C17.51 14.14 17.32 14.09 17.14 14.37C16.95 14.65 16.42 15.27 16.26 15.46C16.1 15.65 15.94 15.67 15.66 15.53C15.38 15.39 14.48 15.1 13.42 14.15C12.59 13.41 12.03 12.5 11.87 12.22C11.71 11.94 11.85 11.79 11.99 11.65C12.12 11.52 12.28 11.31 12.42 11.15C12.56 10.99 12.61 10.87 12.7 10.69C12.79 10.5 12.75 10.34 12.68 10.2C12.61 10.06 12.05 8.7 11.82 8.13C11.59 7.58 11.36 7.65 11.19 7.64C11.03 7.64 10.84 7.63 10.65 7.63C10.47 7.63 10.16 7.7 9.91 7.97"/>
+                    </svg>
+                  </div>
+                  <div>
+                    <div class="ws-wa-title">Daily WhatsApp Alerts</div>
+                    <div class="ws-wa-subtitle">Automated expiry alerts to Manager's WhatsApp</div>
+                  </div>
+                </div>
+                <label class="ws-toggle-switch">
+                  <input type="checkbox" id="waAlertsToggle" onchange="toggleWaAlerts(this.checked)">
+                  <span class="ws-toggle-slider"></span>
+                </label>
+              </div>
+
+              <div id="waConfigBody" class="ws-wa-body" style="display: none;">
+                <div class="form-group" style="margin-bottom: 0.6rem;">
+                  <label class="ws-wa-label">Manager WhatsApp Number (with Country Code) *</label>
+                  <input type="tel" id="waAlertPhone" class="ws-wa-input" placeholder="+919876543210">
+                  <span class="ws-wa-hint">Include country code (e.g. +91 for India)</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0.6rem;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <label class="ws-wa-label" style="margin: 0;">CallMeBot Free API Key *</label>
+                    <a href="https://wa.me/34694264806?text=I%20allow%20callmebot%20to%20send%20me%20messages" target="_blank" class="ws-wa-getkey-link" rel="noopener">
+                      ⚡ 1-Click Get Key
+                    </a>
+                  </div>
+                  <input type="text" id="waAlertApiKey" class="ws-wa-input" placeholder="e.g. 123456">
+                  <span class="ws-wa-hint">Tap '1-Click Get Key', send message to +34 694 26 48 06 on WhatsApp, & paste received key here.</span>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0.8rem;">
+                  <label class="ws-wa-label">Advance Expiry Notice</label>
+                  <select id="waAlertNoticeDays" class="ws-wa-input">
+                    <option value="7" selected>7 Days to Expire + Expired (Recommended)</option>
+                    <option value="3">3 Days to Expire + Expired</option>
+                    <option value="1">1 Day to Expire + Expired</option>
+                    <option value="15">15 Days to Expire + Expired</option>
+                  </select>
+                </div>
+
+                <div class="ws-wa-btns-row">
+                  <button type="button" class="ws-btn ws-btn-save-wa" onclick="saveWaAlertSettings()">
+                    💾 Save Settings
+                  </button>
+                  <button type="button" class="ws-btn ws-btn-test-wa" onclick="sendTestWhatsAppAlert()">
+                    🧪 Test Alert
+                  </button>
+                  <button type="button" class="ws-btn ws-btn-dispatch-wa" onclick="sendTodayExpiryAlertWhatsApp()" title="Send today's vehicle expiry summary to WhatsApp immediately">
+                    📤 Send Today's Alert
+                  </button>
+                </div>
+
+                <div id="waStatusMsg" class="ws-wa-status-msg" style="display: none;"></div>
+              </div>
+            </div>
+
+            <div class="ws-footer-bar">
+              <button type="button" class="ws-switch-link" onclick="showCompanySwitchView()">
+                🔄 Switch or Create New Workspace
+              </button>
+              <button type="button" class="ws-disconnect-btn" onclick="leaveCompanyWorkspace()">
+                🚪 Disconnect
+              </button>
+            </div>
           </div>
+        </div>
 
-          <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.4rem;">
-            Share this Sync Key with staff members:
-          </div>
-
-          <div style="background: var(--bg-card); border: 1.5px dashed var(--primary); padding: 0.6rem 0.8rem; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; cursor: pointer;" onclick="copySyncKey()" title="Click to copy Sync Key">
-            <span style="font-size: 1.15rem; font-weight: 900; letter-spacing: 1px; color: var(--primary);" id="activeSyncKey"></span>
-            <button type="button" class="primary-btn" onclick="copySyncKey(event)" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; font-weight: 700;">
-              📋 Copy Key
+        <!-- VIEW 2: CREATE OR JOIN WORKSPACE (Clean Segmented Tabs) -->
+        <div id="companySetupView">
+          <div class="ws-tabs-bar">
+            <button type="button" class="ws-tab-btn active" id="tabCreateCompany" onclick="switchCompanyTab('create')">
+              ✨ Create Company
+            </button>
+            <button type="button" class="ws-tab-btn" id="tabJoinCompany" onclick="switchCompanyTab('join')">
+              🔑 Join with Sync Key
             </button>
           </div>
 
-          <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
-            <button type="button" class="secondary-btn" onclick="shareSyncKeyWhatsApp()" style="width: 50%; padding: 0.5rem; font-size: 0.85rem; font-weight: 700; color: #22c55e; border-color: rgba(34,197,94,0.5); justify-content: center;">
-              💬 WhatsApp
-            </button>
-            <button type="button" class="secondary-btn" onclick="manualSyncRefresh()" style="width: 50%; padding: 0.5rem; font-size: 0.85rem; font-weight: 700; color: var(--primary); border-color: var(--primary); justify-content: center;">
-              🔄 Refresh
+          <!-- Tab Content 1: CREATE NEW COMPANY -->
+          <div id="companyCreateTabContent" class="ws-tab-pane active">
+            <p class="ws-tab-desc">
+              Create a dedicated cloud workspace for your fleet. A 4-digit Sync Key will be generated automatically for your staff.
+            </p>
+            <form onsubmit="handleCreateCompanySubmit(event)">
+              <div class="form-group" style="margin-bottom: 1.25rem;">
+                <label for="createCompanyNameInput" style="font-weight: 700; font-size: 0.85rem;">Company / Fleet Name *</label>
+                <input type="text" id="createCompanyNameInput" placeholder="e.g. METRO LOGISTICS" required style="padding: 0.75rem; font-size: 0.95rem;">
+                <small style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">Enter your business or fleet title.</small>
+              </div>
+              <button type="submit" class="primary-btn" style="width: 100%; padding: 0.85rem; font-size: 0.95rem; font-weight: 700; justify-content: center;">
+                ✨ Create Fleet Workspace
+              </button>
+            </form>
+          </div>
+
+          <!-- Tab Content 2: JOIN EXISTING COMPANY -->
+          <div id="companyJoinTabContent" class="ws-tab-pane" style="display: none;">
+            <p class="ws-tab-desc">
+              Enter the Sync Key given by your company admin to connect and view fleet records in real-time.
+            </p>
+            <form onsubmit="handleJoinCompanySubmit(event)">
+              <div class="form-group" style="margin-bottom: 1rem;">
+                <label for="joinSyncKeyInput" style="font-weight: 700; font-size: 0.85rem;">Workspace Sync Key *</label>
+                <input type="text" id="joinSyncKeyInput" placeholder="e.g. MMM-1407" required style="text-transform: uppercase; font-weight: 800; letter-spacing: 1px; padding: 0.75rem; font-size: 1rem; color: var(--primary);">
+                <small style="color: var(--text-muted); font-size: 0.75rem; margin-top: 4px;">Ask your manager or admin for this key.</small>
+              </div>
+              <div class="form-group" style="margin-bottom: 1.25rem;">
+                <label for="joinCompanyNameInput" style="font-weight: 700; font-size: 0.85rem;">Company Name (Optional)</label>
+                <input type="text" id="joinCompanyNameInput" placeholder="e.g. MMM" style="padding: 0.75rem; font-size: 0.95rem;">
+              </div>
+              <button type="submit" class="primary-btn" style="width: 100%; padding: 0.85rem; font-size: 0.95rem; font-weight: 700; justify-content: center;">
+                🔗 Join Workspace
+              </button>
+            </form>
+          </div>
+
+          <div id="backToActiveWsBtn" style="display: none; margin-top: 1rem; text-align: center;">
+            <button type="button" class="secondary-btn" onclick="openCompanyModal()" style="font-size: 0.82rem; padding: 0.4rem 0.8rem; margin: 0 auto;">
+              ← Back to Active Workspace
             </button>
           </div>
         </div>
 
-        <form id="companyForm" onsubmit="handleCompanyFormSubmit(event)">
-          <div class="form-group" style="margin-bottom: 1rem;">
-            <label for="companyCodeInput">Company Name / Fleet Title *</label>
-            <input type="text" id="companyCodeInput" placeholder="e.g. METRO LOGISTICS" required>
-          </div>
-
-          <div class="form-group" style="margin-bottom: 1.25rem;">
-            <label for="syncKeyInput">Workspace Sync Key (Optional for Staff)</label>
-            <input type="text" id="syncKeyInput" placeholder="Paste Sync Key here if joining staff workspace">
-            <small style="color: var(--text-muted);">Leave empty if creating a new company workspace.</small>
-          </div>
-
-          <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-            <button type="submit" class="primary-btn" style="width: 100%; padding: 0.75rem;">
-              🔗 Create or Connect Sync Workspace
-            </button>
-            <button type="button" class="secondary-btn" id="syncLocalBtn" onclick="syncLocalVehiclesToCompany()" style="width: 100%; display: none; margin-top: 0.25rem;">
-              ⬆️ Push Local Vehicles to Cloud
-            </button>
-            <button type="button" class="secondary-btn" id="leaveCompanyBtn" onclick="leaveCompanyWorkspace()" style="width: 100%; display: none; color: var(--danger); margin-top: 0.25rem;">
-              ❌ Disconnect Company Sync
-            </button>
-          </div>
-        </form>
       </div>
     </div>
   </div>
 
   <!-- Main JavaScript App File -->
-  <script src="app.js"></script>
+  <script defer src="app.js?v=20"></script>
 </body>
 </html>
