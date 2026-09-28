@@ -2727,6 +2727,7 @@ async function mergeCloudVehicles(cloudVehicles) {
     }
 
     await loadVehicles();
+    checkAndAutoSendDailyAlerts();
 
     // If Document Manager Modal is currently open for a vehicle, re-render its document list live!
     const docModal = document.getElementById('docManagerModal');
@@ -3533,9 +3534,18 @@ async function sendTodayExpiryAlertTelegram(isAutomated = false) {
       throw new Error(data.description || 'Failed to send message');
     }
 
-    const todayIso = new Date().toISOString().split('T')[0];
-    currentTelegramConfig.lastAlertDate = todayIso;
+    const todayIST = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    currentTelegramConfig.lastAlertDate = todayIST;
     localStorage.setItem(`vehicleex_tg_config_${currentSyncKey}`, JSON.stringify(currentTelegramConfig));
+
+    // Sync to Firebase RTDB so all devices and GitHub runner skip duplicate alerts
+    if (currentSyncKey) {
+      fetch(`https://vehicleex-85816-default-rtdb.asia-southeast1.firebasedatabase.app/workspaces/${currentSyncKey}/telegramConfig/lastAlertDate.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(todayIST)
+      }).catch(() => {});
+    }
 
     if (statusMsg && !isAutomated) {
       statusMsg.className = 'ws-tg-status-msg success';
@@ -3546,6 +3556,30 @@ async function sendTodayExpiryAlertTelegram(isAutomated = false) {
       statusMsg.className = 'ws-tg-status-msg error';
       statusMsg.textContent = '⚠️ Error sending alert: ' + err.message;
     }
+  }
+}
+
+let isCheckingDailyAlerts = false;
+async function checkAndAutoSendDailyAlerts() {
+  if (isCheckingDailyAlerts || !currentSyncKey) return;
+  isCheckingDailyAlerts = true;
+  try {
+    const todayIST = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+    const nowHourIST = parseInt(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: 'Asia/Kolkata' }).format(new Date()), 10);
+
+    // Auto-alert check: Trigger if 6:00 AM IST or later and alert not yet sent today
+    if (nowHourIST >= 6) {
+      if (currentTelegramConfig && currentTelegramConfig.enabled && currentTelegramConfig.botToken && currentTelegramConfig.chatId) {
+        if (currentTelegramConfig.lastAlertDate !== todayIST) {
+          console.log('⏰ Auto-triggering daily Telegram alert from in-app supervisor...');
+          await sendTodayExpiryAlertTelegram(true);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Auto alert check notice:', err);
+  } finally {
+    isCheckingDailyAlerts = false;
   }
 }
 

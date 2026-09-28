@@ -2,8 +2,13 @@ name: Daily Vehicle Expiry Alerts (Telegram & WhatsApp)
 
 on:
   schedule:
-    # 02:30 UTC = 08:00 AM IST (Indian Standard Time) every morning
-    - cron: '30 2 * * *'
+    # Morning 6:00 AM IST slots (avoids global :00 / :30 GitHub peak queue delays)
+    # Slot 1: 00:25 UTC = 05:55 AM IST
+    - cron: '25 0 * * *'
+    # Slot 2 (Backup): 00:45 UTC = 06:15 AM IST
+    - cron: '45 0 * * *'
+    # Slot 3 (Backup): 01:15 UTC = 06:45 AM IST
+    - cron: '15 1 * * *'
   workflow_dispatch: # Allows manual trigger from GitHub Actions tab anytime!
 
 jobs:
