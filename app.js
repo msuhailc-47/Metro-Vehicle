@@ -1087,6 +1087,45 @@ function isImageFile(fileObj, fileSrc) {
   return false;
 }
 
+// Identify Cloudinary-hosted PDF documents
+function isCloudinaryPdf(fileObj, fileSrc) {
+  const src = fileSrc || (fileObj && (fileObj.url || fileObj.data)) || '';
+  if (!src || typeof src !== 'string') return false;
+  const s = src.toLowerCase();
+  if (!s.includes('cloudinary.com')) return false;
+
+  if (s.endsWith('.pdf') || s.includes('.pdf?') || s.includes('/pdf/')) return true;
+  if (fileObj) {
+    if (fileObj.type === 'application/pdf') return true;
+    if (fileObj.name && fileObj.name.toLowerCase().endsWith('.pdf')) return true;
+  }
+  return false;
+}
+
+// Convert Cloudinary PDF URL to high-resolution raster page image (200 OK without 401 ACL error)
+function getCloudinaryPdfPageUrl(url, pageNum = 1, width = 1400) {
+  if (typeof url !== 'string') return url;
+  let clean = url.replace(/\.pdf(\?.*)?$/i, '.png$1');
+  if (!clean.includes('.png')) {
+    const qIdx = clean.indexOf('?');
+    if (qIdx !== -1) {
+      clean = clean.slice(0, qIdx) + '.png' + clean.slice(qIdx);
+    } else {
+      clean = clean + '.png';
+    }
+  }
+  return clean.replace(/\/image\/upload\/(?:(?:pg_\d+|w_\d+|f_[a-z0-9]+|q_[a-z0-9]+|[a-z]_[a-z0-9]+),?)*\/?/i, `/image/upload/pg_${pageNum},w_${width}/`);
+}
+
+// Direct attachment download URL for Cloudinary document
+function getCloudinaryPdfAttachmentUrl(url, pageNum = 1) {
+  if (typeof url !== 'string') return url;
+  let clean = url.replace(/\.pdf(\?.*)?$/i, '.png$1');
+  if (!clean.includes('.png')) clean += '.png';
+  return clean.replace(/\/image\/upload\/(?:(?:pg_\d+|w_\d+|f_[a-z0-9]+|q_[a-z0-9]+|[a-z]_[a-z0-9]+),?)*\/?/i, `/image/upload/fl_attachment,pg_${pageNum}/`);
+}
+
+
 function updateFormFileCountText() {
   const txt = document.getElementById('formFileCountText');
   const scanBtnRow = document.getElementById('formAiScanBtnRow');
@@ -1119,11 +1158,20 @@ function renderFormAttachedPreview() {
     if (isImg) {
       thumbContent = `<img src="${fileSrc}" style="width: 100%; height: 80px; object-fit: cover; border-radius: 6px;">`;
     } else if (isPdf) {
-      thumbContent = `
-        <div style="width: 100%; height: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(239, 68, 68, 0.1); border: 1px dashed rgba(239, 68, 68, 0.4); border-radius: 6px; color: #ef4444;">
-          <span style="font-size: 1.8rem; line-height: 1;">📄</span>
-          <span style="font-size: 0.65rem; font-weight: 800; margin-top: 3px; letter-spacing: 0.5px;">PDF DOC</span>
-        </div>`;
+      if (isCloudinaryPdf(f, fileSrc)) {
+        const thumbUrl = getCloudinaryPdfPageUrl(fileSrc, 1, 240);
+        thumbContent = `
+          <div style="position: relative; width: 100%; height: 80px; overflow: hidden; border-radius: 6px; background: #1e293b;">
+            <img src="${thumbUrl}" alt="PDF Preview" style="width: 100%; height: 80px; object-fit: cover; display: block;">
+            <span style="position: absolute; bottom: 3px; right: 3px; background: rgba(239, 68, 68, 0.92); color: #fff; font-size: 0.6rem; font-weight: 800; padding: 1px 5px; border-radius: 3px; line-height: 1;">PDF</span>
+          </div>`;
+      } else {
+        thumbContent = `
+          <div style="width: 100%; height: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(239, 68, 68, 0.1); border: 1px dashed rgba(239, 68, 68, 0.4); border-radius: 6px; color: #ef4444;">
+            <span style="font-size: 1.8rem; line-height: 1;">📄</span>
+            <span style="font-size: 0.65rem; font-weight: 800; margin-top: 3px; letter-spacing: 0.5px;">PDF DOC</span>
+          </div>`;
+      }
     } else {
       thumbContent = `<div style="width: 100%; height: 80px; display: flex; align-items: center; justify-content: center; background: var(--bg-main); border-radius: 6px; font-size: 2rem;">📁</div>`;
     }
@@ -1318,11 +1366,20 @@ function renderDocList(vehicle) {
     if (isImg) {
       thumbHtml = `<img src="${fileSrc}" class="doc-thumb" alt="${escapeHtml(f.name)}">`;
     } else if (isPdf) {
-      thumbHtml = `
-        <div class="doc-thumb" style="display:flex; flex-direction:column; align-items:center; justify-content:center; background: rgba(239, 68, 68, 0.12); color: #ef4444;">
-          <span style="font-size: 1.4rem; line-height: 1;">📄</span>
-          <span style="font-size: 0.6rem; font-weight: 800; margin-top: 2px;">PDF</span>
-        </div>`;
+      if (isCloudinaryPdf(f, fileSrc)) {
+        const thumbUrl = getCloudinaryPdfPageUrl(fileSrc, 1, 240);
+        thumbHtml = `
+          <div style="position: relative; width: 100%; height: 100%; overflow: hidden; border-radius: 6px; background: #1e293b;">
+            <img src="${thumbUrl}" class="doc-thumb" alt="${escapeHtml(f.name)}" style="width: 100%; height: 100%; object-fit: cover; display: block;">
+            <span style="position: absolute; bottom: 2px; right: 2px; background: rgba(239, 68, 68, 0.92); color: #fff; font-size: 0.55rem; font-weight: 800; padding: 1px 4px; border-radius: 3px; line-height: 1;">PDF</span>
+          </div>`;
+      } else {
+        thumbHtml = `
+          <div class="doc-thumb" style="display:flex; flex-direction:column; align-items:center; justify-content:center; background: rgba(239, 68, 68, 0.12); color: #ef4444;">
+            <span style="font-size: 1.4rem; line-height: 1;">📄</span>
+            <span style="font-size: 0.6rem; font-weight: 800; margin-top: 2px;">PDF</span>
+          </div>`;
+      }
     } else {
       thumbHtml = `<div class="doc-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.4rem;">📁</div>`;
     }
@@ -1499,8 +1556,16 @@ async function shareDocFile(fileId) {
 
   const downloadFallback = () => {
     const a = document.createElement('a');
-    a.href = fileSrc;
-    a.download = fileObj.name || `document_${fileId}.jpg`;
+    let downloadUrl = fileSrc;
+    let fileName = fileObj.name || `document_${fileId}.jpg`;
+    if (isCloudinaryPdf(fileObj, fileSrc)) {
+      downloadUrl = getCloudinaryPdfAttachmentUrl(fileSrc, 1);
+      if (!fileName.toLowerCase().endsWith('.png') && !fileName.toLowerCase().endsWith('.pdf')) {
+        fileName += '.png';
+      }
+    }
+    a.href = downloadUrl;
+    a.download = fileName;
     a.target = '_blank';
     document.body.appendChild(a);
     a.click();
@@ -1514,9 +1579,16 @@ async function shareDocFile(fileId) {
   }
 
   try {
-    const res = await fetch(fileSrc);
+    const fetchUrl = isCloudinaryPdf(fileObj, fileSrc) ? getCloudinaryPdfPageUrl(fileSrc, 1, 1600) : fileSrc;
+    const res = await fetch(fetchUrl);
     const blob = await res.blob();
-    const file = new File([blob], fileObj.name, { type: fileObj.type || 'image/jpeg' });
+    const mimeType = isCloudinaryPdf(fileObj, fileSrc) ? 'image/png' : (fileObj.type || 'image/jpeg');
+    let shareName = fileObj.name || 'document.png';
+    if (isCloudinaryPdf(fileObj, fileSrc) && !shareName.toLowerCase().endsWith('.png')) {
+      shareName = shareName.replace(/\.pdf$/i, '.png');
+      if (!shareName.endsWith('.png')) shareName += '.png';
+    }
+    const file = new File([blob], shareName, { type: mimeType });
 
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       await navigator.share({
@@ -1596,11 +1668,64 @@ async function renderPdfInLightbox(pdfSource, contentContainer) {
   contentContainer.innerHTML = `
     <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem 1rem; color: #fff; width: 100%;">
       <div class="ocr-spinner" style="margin-bottom: 1rem;"></div>
-      <p style="font-size: 1rem; font-weight: 700; margin: 0;">Rendering PDF Document...</p>
-      <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.4rem;">High clarity canvas viewer</p>
+      <p style="font-size: 1rem; font-weight: 700; margin: 0;">Opening Document Preview...</p>
+      <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.4rem;">High clarity multi-page viewer</p>
     </div>
   `;
 
+  // Branch 1: Cloudinary PDF (direct raster pages without 401 ACL error)
+  if (isCloudinaryPdf(null, pdfSource)) {
+    try {
+      contentContainer.innerHTML = `
+        <div id="pdfViewerScroll" style="width: 100%; max-height: 72vh; overflow-y: auto; overflow-x: auto; display: flex; flex-direction: column; align-items: center; gap: 1rem; padding: 0.5rem; -webkit-overflow-scrolling: touch;"></div>
+      `;
+      const scrollContainer = document.getElementById('pdfViewerScroll');
+
+      // Page 1 card renders immediately
+      const page1Url = getCloudinaryPdfPageUrl(pdfSource, 1, 1400);
+      const page1Card = document.createElement('div');
+      page1Card.style.cssText = 'position: relative; background: #ffffff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); overflow: hidden; display: flex; flex-direction: column; align-items: center; max-width: 100%;';
+      page1Card.innerHTML = `
+        <div style="width: 100%; background: #1e293b; color: #cbd5e1; font-size: 0.75rem; font-weight: 700; padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; box-sizing: border-box;">
+          <span>Page 1</span>
+          <span style="font-size: 0.7rem; color: #38bdf8; background: rgba(56, 189, 248, 0.15); padding: 2px 8px; border-radius: 4px;">PDF Document</span>
+        </div>
+        <img src="${page1Url}" alt="Page 1" style="max-width: 100%; width: 760px; height: auto; display: block; object-fit: contain;">
+      `;
+      scrollContainer.appendChild(page1Card);
+
+      // Asynchronously discover and append subsequent pages (up to page 5)
+      (async () => {
+        for (let p = 2; p <= 5; p++) {
+          const nextUrl = getCloudinaryPdfPageUrl(pdfSource, p, 1400);
+          try {
+            const headRes = await fetch(nextUrl, { method: 'HEAD' });
+            if (!headRes.ok) break;
+            const card = document.createElement('div');
+            card.style.cssText = 'position: relative; background: #ffffff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); overflow: hidden; display: flex; flex-direction: column; align-items: center; max-width: 100%;';
+            card.innerHTML = `
+              <div style="width: 100%; background: #1e293b; color: #cbd5e1; font-size: 0.75rem; font-weight: 700; padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; box-sizing: border-box;">
+                <span>Page ${p}</span>
+                <span style="font-size: 0.7rem; color: #38bdf8; background: rgba(56, 189, 248, 0.15); padding: 2px 8px; border-radius: 4px;">PDF Document</span>
+              </div>
+              <img src="${nextUrl}" alt="Page ${p}" style="max-width: 100%; width: 760px; height: auto; display: block; object-fit: contain;">
+            `;
+            const currentScroll = document.getElementById('pdfViewerScroll');
+            if (currentScroll) {
+              currentScroll.appendChild(card);
+            }
+          } catch (e) {
+            break;
+          }
+        }
+      })();
+      return;
+    } catch (cldErr) {
+      console.warn('Cloudinary PDF render error:', cldErr);
+    }
+  }
+
+  // Branch 2: Local Base64 or Blob PDF (via PDF.js)
   try {
     const pdf = await loadPdfDocument(pdfSource);
     const numPages = pdf.numPages;
@@ -1644,18 +1769,17 @@ async function renderPdfInLightbox(pdfSource, contentContainer) {
     }
   } catch (err) {
     console.error('PDF Render Error:', err);
-    const blobUrl = getPdfBlobUrl(pdfSource);
     contentContainer.innerHTML = `
       <div style="text-align: center; color: #fff; padding: 2.5rem 1rem; max-width: 480px;">
         <div style="font-size: 3rem; margin-bottom: 0.75rem;">📄</div>
         <h4 style="font-size: 1.1rem; margin-bottom: 0.5rem; color: #fff;">PDF Document</h4>
         <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.5rem;">
-          Tap below to open this PDF full-screen in your phone or browser's PDF viewer.
+          Tap below to view or download this document.
         </p>
         <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
-          <a href="${blobUrl}" target="_blank" class="primary-btn" style="color: #fff; text-decoration: none; padding: 0.65rem 1.25rem; font-weight: 700; display: inline-flex; align-items: center; gap: 0.4rem;">
-            ↗️ Open Full PDF
-          </a>
+          <button type="button" class="primary-btn" onclick="openCurrentLightboxInNewTab()" style="color: #fff; padding: 0.65rem 1.25rem; font-weight: 700; display: inline-flex; align-items: center; gap: 0.4rem;">
+            ↗️ Open Full View
+          </button>
           <button type="button" class="secondary-btn" onclick="downloadCurrentLightboxFile()" style="color: #fff; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.1); padding: 0.65rem 1.25rem; font-weight: 700;">
             📥 Download
           </button>
@@ -1667,22 +1791,39 @@ async function renderPdfInLightbox(pdfSource, contentContainer) {
 
 function openCurrentLightboxInNewTab() {
   if (!currentLightboxFile || !currentLightboxFile.src) return;
-  const isPdf = isPdfFile(currentLightboxFile, currentLightboxFile.src);
+  const src = currentLightboxFile.src;
+  if (isCloudinaryPdf(currentLightboxFile, src)) {
+    const viewUrl = getCloudinaryPdfPageUrl(src, 1, 1600);
+    window.open(viewUrl, '_blank');
+    return;
+  }
+  const isPdf = isPdfFile(currentLightboxFile, src);
   if (isPdf) {
-    const blobUrl = getPdfBlobUrl(currentLightboxFile.src);
+    const blobUrl = getPdfBlobUrl(src);
     window.open(blobUrl, '_blank');
   } else {
-    window.open(currentLightboxFile.src, '_blank');
+    window.open(src, '_blank');
   }
 }
 
 function downloadCurrentLightboxFile() {
   if (!currentLightboxFile || !currentLightboxFile.src) return;
+  const src = currentLightboxFile.src;
+  let targetUrl = src;
+  let filename = currentLightboxFile.name || 'document';
+
+  if (isCloudinaryPdf(currentLightboxFile, src)) {
+    targetUrl = getCloudinaryPdfAttachmentUrl(src, 1);
+    if (!filename.toLowerCase().endsWith('.png') && !filename.toLowerCase().endsWith('.pdf')) {
+      filename += '.png';
+    }
+  } else if (isPdfFile(currentLightboxFile, src)) {
+    targetUrl = getPdfBlobUrl(src);
+  }
+
   const a = document.createElement('a');
-  const isPdf = isPdfFile(currentLightboxFile, currentLightboxFile.src);
-  const targetUrl = isPdf ? getPdfBlobUrl(currentLightboxFile.src) : currentLightboxFile.src;
   a.href = targetUrl;
-  a.download = currentLightboxFile.name || 'document';
+  a.download = filename;
   a.target = '_blank';
   document.body.appendChild(a);
   a.click();
@@ -1708,11 +1849,21 @@ async function downloadSingleDoc(fileId) {
   if (!fileObj) return;
 
   const fileSrc = fileObj.url || fileObj.data;
+  let targetUrl = fileSrc;
+  let filename = fileObj.name || 'document';
+
+  if (isCloudinaryPdf(fileObj, fileSrc)) {
+    targetUrl = getCloudinaryPdfAttachmentUrl(fileSrc, 1);
+    if (!filename.toLowerCase().endsWith('.png') && !filename.toLowerCase().endsWith('.pdf')) {
+      filename += '.png';
+    }
+  } else if (isPdfFile(fileObj, fileSrc)) {
+    targetUrl = getPdfBlobUrl(fileSrc);
+  }
+
   const a = document.createElement('a');
-  const isPdf = isPdfFile(fileObj, fileSrc);
-  const targetUrl = isPdf ? getPdfBlobUrl(fileSrc) : fileSrc;
   a.href = targetUrl;
-  a.download = fileObj.name || 'document';
+  a.download = filename;
   a.target = '_blank';
   document.body.appendChild(a);
   a.click();
@@ -1742,9 +1893,14 @@ async function handleDownloadAllZip() {
 
     try {
       if (fileSrc.startsWith('http')) {
-        const res = await fetch(fileSrc);
+        const fetchUrl = isCloudinaryPdf(f, fileSrc) ? getCloudinaryPdfPageUrl(fileSrc, 1, 1600) : fileSrc;
+        const res = await fetch(fetchUrl);
         const blob = await res.blob();
-        folder.file(f.name || `doc_${i+1}.jpg`, blob);
+        let fileName = f.name || `doc_${i+1}.jpg`;
+        if (isCloudinaryPdf(f, fileSrc) && !fileName.toLowerCase().endsWith('.png') && !fileName.toLowerCase().endsWith('.pdf')) {
+          fileName += '.png';
+        }
+        folder.file(fileName, blob);
       } else if (fileSrc.includes(',')) {
         const base64Data = fileSrc.split(',')[1];
         folder.file(f.name || `doc_${i+1}.jpg`, base64Data, { base64: true });
@@ -2420,46 +2576,78 @@ async function scanSingleDocument(file, onProgress) {
   let extractedText = '';
 
   if (isPdf) {
-    try {
-      if (onProgress) onProgress(0.15, `Opening PDF (${file.name || 'Document'})...`);
-      const pdf = await loadPdfDocument(fileSrc);
-      const numPages = pdf.numPages;
+    if (isCloudinaryPdf(file, fileSrc)) {
+      // Cloudinary PDF: Read direct high-res raster pages with Tesseract OCR (bypasses Cloudinary raw PDF 401 ACL)
+      if (typeof Tesseract === 'undefined') {
+        throw new Error('AI OCR engine is loading. Please check internet connection.');
+      }
+      if (onProgress) onProgress(0.15, `Scanning Cloud PDF (${file.name || 'Document'})...`);
 
-      // Step 1: Fast direct digital text extraction (50ms)
-      if (onProgress) onProgress(0.3, `Extracting digital text from ${numPages} page(s)...`);
-      let digitalText = '';
-      for (let p = 1; p <= numPages; p++) {
-        const page = await pdf.getPage(p);
-        const textContent = await page.getTextContent();
-        const pageStr = textContent.items.map(item => item.str).join(' ');
-        digitalText += `\n${pageStr}\n`;
+      // Page 1 is the primary page for vehicle documents
+      try {
+        const page1Url = getCloudinaryPdfPageUrl(fileSrc, 1, 1400);
+        if (onProgress) onProgress(0.3, `AI OCR reading page 1...`);
+        const result1 = await Tesseract.recognize(page1Url, 'eng');
+        extractedText += '\n' + (result1.data.text || '') + '\n';
+      } catch (err1) {
+        console.warn('OCR error on Cloudinary PDF page 1:', err1);
       }
 
-      if (digitalText.replace(/\s+/g, '').length >= 30) {
-        console.log(`⚡ Instant Digital PDF text extracted from ${file.name} (${digitalText.length} chars)`);
-        extractedText = digitalText;
-      } else {
-        // Step 2: Scanned image PDF fallback: Render pages to canvas and run Tesseract OCR
-        console.log(`🖼️ Scanned image PDF detected for ${file.name}. Rendering pages for OCR...`);
-        for (let p = 1; p <= numPages; p++) {
-          if (onProgress) onProgress(0.3 + (p / numPages) * 0.65, `AI OCR reading page ${p} of ${numPages}...`);
-          const page = await pdf.getPage(p);
-          const viewport = page.getViewport({ scale: 1.5 });
-          const canvas = document.createElement('canvas');
-          canvas.width = viewport.width;
-          canvas.height = viewport.height;
-          const ctx = canvas.getContext('2d');
-          await page.render({ canvasContext: ctx, viewport }).promise;
-          const pageImg = canvas.toDataURL('image/jpeg', 0.85);
+      // Check if Page 2 exists and read it
+      try {
+        const page2Url = getCloudinaryPdfPageUrl(fileSrc, 2, 1400);
+        const headRes2 = await fetch(page2Url, { method: 'HEAD' });
+        if (headRes2.ok) {
+          if (onProgress) onProgress(0.65, `AI OCR reading page 2...`);
+          const result2 = await Tesseract.recognize(page2Url, 'eng');
+          extractedText += '\n' + (result2.data.text || '') + '\n';
+        }
+      } catch (err2) {
+        // Page 2 doesn't exist or fetch notice, continue
+      }
+    } else {
+      // Local Base64 or Blob PDF: Fast direct digital text extraction + canvas OCR fallback
+      try {
+        if (onProgress) onProgress(0.15, `Opening PDF (${file.name || 'Document'})...`);
+        const pdf = await loadPdfDocument(fileSrc);
+        const numPages = pdf.numPages;
 
-          if (typeof Tesseract !== 'undefined') {
-            const result = await Tesseract.recognize(pageImg, 'eng');
-            extractedText += `\n${result.data.text}\n`;
+        // Step 1: Fast direct digital text extraction (50ms)
+        if (onProgress) onProgress(0.3, `Extracting digital text from ${numPages} page(s)...`);
+        let digitalText = '';
+        for (let p = 1; p <= numPages; p++) {
+          const page = await pdf.getPage(p);
+          const textContent = await page.getTextContent();
+          const pageStr = textContent.items.map(item => item.str).join(' ');
+          digitalText += `\n${pageStr}\n`;
+        }
+
+        if (digitalText.replace(/\s+/g, '').length >= 30) {
+          console.log(`⚡ Instant Digital PDF text extracted from ${file.name} (${digitalText.length} chars)`);
+          extractedText = digitalText;
+        } else {
+          // Step 2: Scanned image PDF fallback: Render pages to canvas and run Tesseract OCR
+          console.log(`🖼️ Scanned image PDF detected for ${file.name}. Rendering pages for OCR...`);
+          for (let p = 1; p <= numPages; p++) {
+            if (onProgress) onProgress(0.3 + (p / numPages) * 0.65, `AI OCR reading page ${p} of ${numPages}...`);
+            const page = await pdf.getPage(p);
+            const viewport = page.getViewport({ scale: 1.5 });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext('2d');
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            const pageImg = canvas.toDataURL('image/jpeg', 0.85);
+
+            if (typeof Tesseract !== 'undefined') {
+              const result = await Tesseract.recognize(pageImg, 'eng');
+              extractedText += `\n${result.data.text}\n`;
+            }
           }
         }
+      } catch (pdfErr) {
+        console.warn('PDF scan notice for', file.name, pdfErr);
       }
-    } catch (pdfErr) {
-      console.warn('PDF scan notice for', file.name, pdfErr);
     }
   } else {
     // Normal Image scanning (Camera photo, gallery image)

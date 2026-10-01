@@ -1,5 +1,5 @@
-// Service Worker v24 - PDF View & AI Scan Support
-const CACHE_NAME = 'vehicle-ex-v24';
+// Service Worker v25 - Cloudinary PDF View, Download & AI Scan
+const CACHE_NAME = 'vehicle-ex-v25';
 const ASSETS = [
   './',
   './index.html',
