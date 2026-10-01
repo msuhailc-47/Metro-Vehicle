@@ -1054,16 +1054,52 @@ async function handleFileInputChange(e) {
   renderFormAttachedPreview();
 }
 
+function isPdfFile(fileObj, fileSrc) {
+  if (!fileObj && !fileSrc) return false;
+  const type = (fileObj && fileObj.type) || '';
+  const name = (fileObj && fileObj.name) || '';
+  const src = fileSrc || (fileObj && (fileObj.url || fileObj.data)) || '';
+
+  if (type === 'application/pdf') return true;
+  if (name.toLowerCase().endsWith('.pdf')) return true;
+  if (typeof src === 'string') {
+    const s = src.toLowerCase();
+    if (s.startsWith('data:application/pdf')) return true;
+    if (s.endsWith('.pdf') || s.includes('.pdf?') || s.includes('/pdf/')) return true;
+  }
+  return false;
+}
+
+function isImageFile(fileObj, fileSrc) {
+  if (isPdfFile(fileObj, fileSrc)) return false;
+  const type = (fileObj && fileObj.type) || '';
+  const name = (fileObj && fileObj.name) || '';
+  const src = fileSrc || (fileObj && (fileObj.url || fileObj.data)) || '';
+
+  if (type.startsWith('image/')) return true;
+  if (name.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg|avif)$/i)) return true;
+  if (typeof src === 'string') {
+    const s = src.toLowerCase();
+    if (s.startsWith('data:image/')) return true;
+    if (s.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg|avif)(\?|$)/i)) return true;
+    if (s.includes('cloudinary.com') && !s.includes('.pdf')) return true;
+  }
+  return false;
+}
+
 function updateFormFileCountText() {
   const txt = document.getElementById('formFileCountText');
+  const scanBtnRow = document.getElementById('formAiScanBtnRow');
   if (tempAttachedFiles.length === 0) {
-    txt.innerText = 'No files selected.';
+    if (txt) txt.innerText = 'No files selected.';
+    if (scanBtnRow) scanBtnRow.style.display = 'none';
   } else {
-    txt.innerText = `${tempAttachedFiles.length} of 10 file(s) attached.`;
+    if (txt) txt.innerText = `${tempAttachedFiles.length} of 10 file(s) attached.`;
+    if (scanBtnRow) scanBtnRow.style.display = 'block';
   }
 }
 
-// Render visual thumbnail preview grid with individual remove buttons
+// Render visual thumbnail preview grid with individual remove buttons and click-to-view
 function renderFormAttachedPreview() {
   const container = document.getElementById('formAttachedPreview');
   if (!container) return;
@@ -1076,21 +1112,41 @@ function renderFormAttachedPreview() {
   let html = '';
   tempAttachedFiles.forEach((f, idx) => {
     const fileSrc = f.url || f.data;
-    const isImage = (f.type && f.type.startsWith('image/')) || (fileSrc && (fileSrc.startsWith('data:image/') || fileSrc.includes('cloudinary.com') || fileSrc.match(/\.(jpg|jpeg|png|webp|gif)/i)));
-    const thumbContent = isImage
-      ? `<img src="${fileSrc}" style="width: 100%; height: 80px; object-fit: cover; border-radius: 6px;">`
-      : `<div style="width: 100%; height: 80px; display: flex; align-items: center; justify-content: center; background: var(--bg-main); border-radius: 6px; font-size: 2rem;">📄</div>`;
+    const isPdf = isPdfFile(f, fileSrc);
+    const isImg = isImageFile(f, fileSrc);
+
+    let thumbContent = '';
+    if (isImg) {
+      thumbContent = `<img src="${fileSrc}" style="width: 100%; height: 80px; object-fit: cover; border-radius: 6px;">`;
+    } else if (isPdf) {
+      thumbContent = `
+        <div style="width: 100%; height: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(239, 68, 68, 0.1); border: 1px dashed rgba(239, 68, 68, 0.4); border-radius: 6px; color: #ef4444;">
+          <span style="font-size: 1.8rem; line-height: 1;">📄</span>
+          <span style="font-size: 0.65rem; font-weight: 800; margin-top: 3px; letter-spacing: 0.5px;">PDF DOC</span>
+        </div>`;
+    } else {
+      thumbContent = `<div style="width: 100%; height: 80px; display: flex; align-items: center; justify-content: center; background: var(--bg-main); border-radius: 6px; font-size: 2rem;">📁</div>`;
+    }
 
     html += `
       <div style="position: relative; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; padding: 4px;">
-        ${thumbContent}
-        <div style="font-size: 0.7rem; padding: 2px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted);">${f.name}</div>
-        <button type="button" onclick="removeFormAttachedFile(${idx})" style="position: absolute; top: 4px; right: 4px; width: 34px; height: 34px; border-radius: 50%; background: #ef4444; color: #ffffff; border: 2px solid #ffffff; font-size: 1.1rem; font-weight: 800; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,0.6); z-index: 20; touch-action: manipulation;" title="Remove this photo">✕</button>
+        <div onclick="previewFormAttachedFile(${idx})" style="cursor: pointer;" title="Click to view file">
+          ${thumbContent}
+        </div>
+        <div style="font-size: 0.7rem; padding: 3px 4px 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); cursor: pointer;" onclick="previewFormAttachedFile(${idx})" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</div>
+        <button type="button" onclick="removeFormAttachedFile(${idx})" style="position: absolute; top: 4px; right: 4px; width: 32px; height: 32px; border-radius: 50%; background: #ef4444; color: #ffffff; border: 2px solid #ffffff; font-size: 1.1rem; font-weight: 800; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; box-shadow: 0 2px 8px rgba(0,0,0,0.6); z-index: 20; touch-action: manipulation;" title="Remove this file">✕</button>
       </div>
     `;
   });
 
   container.innerHTML = html;
+}
+
+function previewFormAttachedFile(idx) {
+  const f = tempAttachedFiles[idx];
+  if (!f) return;
+  const fileSrc = f.url || f.data;
+  openLightboxWithFile(f.name, fileSrc, f.type);
 }
 
 // Remove a single file from the form's attached files list
@@ -1255,8 +1311,21 @@ function renderDocList(vehicle) {
   let html = '';
   vehicle.files.forEach((f, idx) => {
     const fileSrc = f.url || f.data;
-    const isImage = (f.type && f.type.startsWith('image/')) || (fileSrc && (fileSrc.startsWith('data:image/') || fileSrc.includes('cloudinary.com') || fileSrc.match(/\.(jpg|jpeg|png|webp|gif)/i)));
-    const thumbHtml = isImage ? `<img src="${fileSrc}" class="doc-thumb" alt="${f.name}">` : `<div class="doc-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.4rem;">📄</div>`;
+    const isPdf = isPdfFile(f, fileSrc);
+    const isImg = isImageFile(f, fileSrc);
+
+    let thumbHtml = '';
+    if (isImg) {
+      thumbHtml = `<img src="${fileSrc}" class="doc-thumb" alt="${escapeHtml(f.name)}">`;
+    } else if (isPdf) {
+      thumbHtml = `
+        <div class="doc-thumb" style="display:flex; flex-direction:column; align-items:center; justify-content:center; background: rgba(239, 68, 68, 0.12); color: #ef4444;">
+          <span style="font-size: 1.4rem; line-height: 1;">📄</span>
+          <span style="font-size: 0.6rem; font-weight: 800; margin-top: 2px;">PDF</span>
+        </div>`;
+    } else {
+      thumbHtml = `<div class="doc-thumb" style="display:flex;align-items:center;justify-content:center;font-size:1.4rem;">📁</div>`;
+    }
 
     html += `
       <div class="doc-item-row">
@@ -1471,6 +1540,155 @@ async function shareDocFile(fileId) {
   }
 }
 
+let currentLightboxFile = null;
+let currentLightboxBlobUrl = null;
+
+function closeLightboxModal() {
+  const modal = document.getElementById('lightboxModal');
+  if (modal) modal.classList.remove('active');
+  const content = document.getElementById('lightboxContent');
+  if (content) content.innerHTML = '';
+  if (currentLightboxBlobUrl) {
+    try { URL.revokeObjectURL(currentLightboxBlobUrl); } catch (e) {}
+    currentLightboxBlobUrl = null;
+  }
+  currentLightboxFile = null;
+}
+
+function openLightboxWithFile(name, src, type) {
+  currentLightboxFile = { name: name || 'Document', src, type };
+  const titleEl = document.getElementById('lightboxTitle');
+  if (titleEl) titleEl.innerText = name || 'Document Preview';
+
+  const modal = document.getElementById('lightboxModal');
+  const content = document.getElementById('lightboxContent');
+  if (!modal || !content) return;
+
+  const isPdf = isPdfFile({ name, type }, src);
+  const isImg = isImageFile({ name, type }, src);
+
+  if (isImg) {
+    content.innerHTML = `
+      <div style="display: flex; justify-content: center; align-items: center; width: 100%; padding: 0.5rem;">
+        <img src="${src}" alt="${escapeHtml(name)}" style="max-width: 100%; max-height: 75vh; border-radius: 8px; object-fit: contain; box-shadow: 0 4px 20px rgba(0,0,0,0.6);">
+      </div>
+    `;
+  } else if (isPdf) {
+    renderPdfInLightbox(src, content);
+  } else {
+    const blobUrl = getPdfBlobUrl(src);
+    content.innerHTML = `
+      <div style="text-align: center; color: #fff; padding: 2.5rem 1rem;">
+        <div style="font-size: 3rem; margin-bottom: 0.75rem;">📁</div>
+        <p style="font-size: 1rem; font-weight: 600; margin-bottom: 1rem;">${escapeHtml(name)}</p>
+        <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+          <a href="${blobUrl}" target="_blank" class="primary-btn" style="color: #fff; text-decoration: none;">↗️ Open File</a>
+          <button type="button" class="secondary-btn" onclick="downloadCurrentLightboxFile()" style="color: #fff; border-color: rgba(255,255,255,0.3);">📥 Download</button>
+        </div>
+      </div>
+    `;
+  }
+
+  modal.classList.add('active');
+}
+
+async function renderPdfInLightbox(pdfSource, contentContainer) {
+  contentContainer.innerHTML = `
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem 1rem; color: #fff; width: 100%;">
+      <div class="ocr-spinner" style="margin-bottom: 1rem;"></div>
+      <p style="font-size: 1rem; font-weight: 700; margin: 0;">Rendering PDF Document...</p>
+      <p style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.4rem;">High clarity canvas viewer</p>
+    </div>
+  `;
+
+  try {
+    const pdf = await loadPdfDocument(pdfSource);
+    const numPages = pdf.numPages;
+
+    contentContainer.innerHTML = `
+      <div id="pdfViewerScroll" style="width: 100%; max-height: 72vh; overflow-y: auto; overflow-x: auto; display: flex; flex-direction: column; align-items: center; gap: 1rem; padding: 0.5rem; -webkit-overflow-scrolling: touch;"></div>
+    `;
+    const scrollContainer = document.getElementById('pdfViewerScroll');
+
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const unscaledViewport = page.getViewport({ scale: 1.0 });
+
+      // Calculate width to fit comfortably on screen (mobile or desktop)
+      const containerWidth = Math.min(window.innerWidth - 48, 760);
+      const scale = containerWidth / unscaledViewport.width;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const renderViewport = page.getViewport({ scale: scale * dpr });
+
+      const pageCard = document.createElement('div');
+      pageCard.style.cssText = 'position: relative; background: #ffffff; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); overflow: hidden; display: flex; flex-direction: column; align-items: center; max-width: 100%;';
+
+      const pageHeader = document.createElement('div');
+      pageHeader.style.cssText = 'width: 100%; background: #1e293b; color: #cbd5e1; font-size: 0.75rem; font-weight: 700; padding: 6px 12px; display: flex; justify-content: space-between; align-items: center; box-sizing: border-box;';
+      pageHeader.innerHTML = `<span>Page ${pageNum} of ${numPages}</span><span style="font-size: 0.7rem; color: #64748b;">${Math.round(unscaledViewport.width)} × ${Math.round(unscaledViewport.height)}</span>`;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = renderViewport.width;
+      canvas.height = renderViewport.height;
+      canvas.style.width = `${Math.round(renderViewport.width / dpr)}px`;
+      canvas.style.maxWidth = '100%';
+      canvas.style.height = 'auto';
+      canvas.style.display = 'block';
+
+      const ctx = canvas.getContext('2d');
+      pageCard.appendChild(pageHeader);
+      pageCard.appendChild(canvas);
+      scrollContainer.appendChild(pageCard);
+
+      await page.render({ canvasContext: ctx, viewport: renderViewport }).promise;
+    }
+  } catch (err) {
+    console.error('PDF Render Error:', err);
+    const blobUrl = getPdfBlobUrl(pdfSource);
+    contentContainer.innerHTML = `
+      <div style="text-align: center; color: #fff; padding: 2.5rem 1rem; max-width: 480px;">
+        <div style="font-size: 3rem; margin-bottom: 0.75rem;">📄</div>
+        <h4 style="font-size: 1.1rem; margin-bottom: 0.5rem; color: #fff;">PDF Document</h4>
+        <p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 1.5rem;">
+          Tap below to open this PDF full-screen in your phone or browser's PDF viewer.
+        </p>
+        <div style="display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap;">
+          <a href="${blobUrl}" target="_blank" class="primary-btn" style="color: #fff; text-decoration: none; padding: 0.65rem 1.25rem; font-weight: 700; display: inline-flex; align-items: center; gap: 0.4rem;">
+            ↗️ Open Full PDF
+          </a>
+          <button type="button" class="secondary-btn" onclick="downloadCurrentLightboxFile()" style="color: #fff; border-color: rgba(255,255,255,0.3); background: rgba(255,255,255,0.1); padding: 0.65rem 1.25rem; font-weight: 700;">
+            📥 Download
+          </button>
+        </div>
+      </div>
+    `;
+  }
+}
+
+function openCurrentLightboxInNewTab() {
+  if (!currentLightboxFile || !currentLightboxFile.src) return;
+  const isPdf = isPdfFile(currentLightboxFile, currentLightboxFile.src);
+  if (isPdf) {
+    const blobUrl = getPdfBlobUrl(currentLightboxFile.src);
+    window.open(blobUrl, '_blank');
+  } else {
+    window.open(currentLightboxFile.src, '_blank');
+  }
+}
+
+function downloadCurrentLightboxFile() {
+  if (!currentLightboxFile || !currentLightboxFile.src) return;
+  const a = document.createElement('a');
+  const isPdf = isPdfFile(currentLightboxFile, currentLightboxFile.src);
+  const targetUrl = isPdf ? getPdfBlobUrl(currentLightboxFile.src) : currentLightboxFile.src;
+  a.href = targetUrl;
+  a.download = currentLightboxFile.name || 'document';
+  a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => document.body.removeChild(a), 500);
+}
+
 async function previewDocFile(fileId) {
   const vehicle = await db.getVehicle(currentDocManagerVehicleId);
   if (!vehicle) return;
@@ -1478,21 +1696,8 @@ async function previewDocFile(fileId) {
   const fileObj = vehicle.files.find(f => f.id === fileId);
   if (!fileObj) return;
 
-  const content = document.getElementById('lightboxContent');
-  document.getElementById('lightboxTitle').innerText = fileObj.name;
   const fileSrc = fileObj.url || fileObj.data;
-
-  const isImage = (fileObj.type && fileObj.type.startsWith('image/')) || (fileSrc && (fileSrc.startsWith('data:image/') || fileSrc.includes('cloudinary.com') || fileSrc.match(/\.(jpg|jpeg|png|webp|gif)/i)));
-
-  if (isImage) {
-    content.innerHTML = `<img src="${fileSrc}" style="max-width: 100%; max-height: 70vh; border-radius: 8px; object-fit: contain;">`;
-  } else if ((fileObj.type === 'application/pdf') || (fileSrc && (fileSrc.startsWith('data:application/pdf') || fileSrc.endsWith('.pdf')))) {
-    content.innerHTML = `<iframe src="${fileSrc}" style="width: 100%; height: 70vh; border: none;"></iframe>`;
-  } else {
-    content.innerHTML = `<div style="text-align: center; color: #fff; padding: 2rem;"><p>Click below to view file:</p><a href="${fileSrc}" target="_blank" class="primary-btn" style="display: inline-flex; margin-top: 1rem; color: #fff;">Open File</a></div>`;
-  }
-
-  document.getElementById('lightboxModal').classList.add('active');
+  openLightboxWithFile(fileObj.name, fileSrc, fileObj.type);
 }
 
 async function downloadSingleDoc(fileId) {
@@ -1504,8 +1709,10 @@ async function downloadSingleDoc(fileId) {
 
   const fileSrc = fileObj.url || fileObj.data;
   const a = document.createElement('a');
-  a.href = fileSrc;
-  a.download = fileObj.name;
+  const isPdf = isPdfFile(fileObj, fileSrc);
+  const targetUrl = isPdf ? getPdfBlobUrl(fileSrc) : fileSrc;
+  a.href = targetUrl;
+  a.download = fileObj.name || 'document';
   a.target = '_blank';
   document.body.appendChild(a);
   a.click();
@@ -1992,40 +2199,75 @@ function showCalDayDetails(day) {
   container.innerHTML = html;
 }
 
-// PDF.js worker setup
-if (typeof pdfjsLib !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+/// PDF.js Engine Configuration & Helpers
+function initPdfjs() {
+  const lib = typeof pdfjsLib !== 'undefined' ? pdfjsLib : ((typeof window !== 'undefined' && window.pdfjsLib) || (typeof window !== 'undefined' && window['pdfjs-dist/build/pdf']));
+  if (lib) {
+    if (!lib.GlobalWorkerOptions.workerSrc || lib.GlobalWorkerOptions.workerSrc.includes('cdnjs')) {
+      lib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
+    }
+    return lib;
+  }
+  return null;
 }
 
-async function convertPdfToImages(pdfSource) {
-  let loadingTask;
-  if (typeof pdfSource === 'string' && pdfSource.startsWith('data:application/pdf')) {
-    const base64Data = pdfSource.split(',')[1];
-    const binaryString = window.atob(base64Data);
-    const len = binaryString.length;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+// Convert base64 data to Uint8Array for binary-safe PDF parsing
+function getPdfDataBytes(pdfSource) {
+  if (typeof pdfSource === 'string' && (pdfSource.startsWith('data:') || pdfSource.includes(';base64,'))) {
+    try {
+      const commaIdx = pdfSource.indexOf(',');
+      const base64Data = commaIdx !== -1 ? pdfSource.substring(commaIdx + 1) : pdfSource;
+      const binaryString = window.atob(base64Data.trim());
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return bytes;
+    } catch (e) {
+      console.warn('Error decoding base64 PDF bytes:', e);
     }
-    loadingTask = pdfjsLib.getDocument({ data: bytes });
-  } else {
-    loadingTask = pdfjsLib.getDocument(pdfSource);
+  }
+  return null;
+}
+
+// Create a Blob URL from PDF source (safe for opening in new tabs and downloading without data URL restrictions)
+function getPdfBlobUrl(pdfSource) {
+  if (typeof pdfSource === 'string' && (pdfSource.startsWith('data:') || pdfSource.includes(';base64,'))) {
+    try {
+      const bytes = getPdfDataBytes(pdfSource);
+      if (bytes) {
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        return URL.createObjectURL(blob);
+      }
+    } catch (e) {
+      console.warn('Failed to create PDF blob URL:', e);
+    }
+  }
+  return pdfSource;
+}
+
+// Safely load a PDF document object using PDF.js
+async function loadPdfDocument(pdfSource) {
+  const lib = initPdfjs();
+  if (!lib) {
+    throw new Error('PDF.js library is loading. Please check internet connection.');
   }
 
-  const pdf = await loadingTask.promise;
-  const images = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1.5 });
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    canvas.height = viewport.height;
-    canvas.width = viewport.width;
-    await page.render({ canvasContext: context, viewport: viewport }).promise;
-    images.push(canvas.toDataURL('image/jpeg'));
+  const bytes = getPdfDataBytes(pdfSource);
+  if (bytes) {
+    return await lib.getDocument({ data: bytes }).promise;
   }
-  return images;
+
+  // If remote URL (e.g. Cloudinary)
+  try {
+    return await lib.getDocument(pdfSource).promise;
+  } catch (err) {
+    console.warn('Direct PDF URL load notice, trying arrayBuffer fetch:', err.message);
+    const res = await fetch(pdfSource);
+    const buf = await res.arrayBuffer();
+    return await lib.getDocument({ data: new Uint8Array(buf) }).promise;
+  }
 }
 
 // Image compression helper to speed up OCR and ensure clean canvas
@@ -2037,18 +2279,15 @@ async function compressImageForOcr(imageSrc, maxWidth = 1600) {
       try {
         let width = img.width;
         let height = img.height;
-        
         if (width > maxWidth) {
           height = Math.round((height * maxWidth) / width);
           width = maxWidth;
         }
-        
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
-        
         resolve(canvas.toDataURL('image/jpeg', 0.85));
       } catch (e) {
         resolve(imageSrc);
@@ -2059,96 +2298,246 @@ async function compressImageForOcr(imageSrc, maxWidth = 1600) {
   });
 }
 
-// ==================== SMART OCR / AI SCANNER ====================
-async function ocrScanAllDocs() {
-  if (typeof Tesseract === 'undefined') {
-    alert('⏳ AI Scanner engine is loading from CDN. Please check internet and try again.');
-    return;
+// Match Indian registration plates (e.g. KL-07-CD-1234, MH-12-AB-1234, DL-01-A-9999)
+function detectVehicleNoFromText(text) {
+  if (!text) return null;
+  const regex = /\b([A-Z]{2}[-\s]?[0-9]{1,2}[-\s]?[A-Z]{1,3}[-\s]?[0-9]{4})\b/i;
+  const match = regex.exec(text);
+  if (match) {
+    return match[1].toUpperCase().replace(/\s+/g, '-').replace(/--+/g, '-');
+  }
+  return null;
+}
+
+function detectDocumentTypeFromText(text) {
+  if (!text) return null;
+  const t = text.toLowerCase();
+  if (t.includes('certificate of registration') || (t.includes('owner name') && t.includes('chassis')) || t.includes('form 23') || t.includes('rc status')) return 'RC Book';
+  if (t.includes('certificate of fitness') || t.includes('fitness certificate') || t.includes('form 38')) return 'Fitness Certificate';
+  if (t.includes('insurance') || t.includes('policy schedule') || t.includes('certificate of insurance') || t.includes('motor vehicle insurance')) return 'Insurance Policy';
+  if (t.includes('tax receipt') || t.includes('motor vehicle tax') || t.includes('mv tax') || t.includes('road tax')) return 'Tax Receipt';
+  if (t.includes('national permit') || t.includes('goods carriage permit') || t.includes('all india tourist permit') || t.includes('form 48') || t.includes('permit certificate')) return 'Permit';
+  if (t.includes('pollution') || t.includes('emission') || t.includes('pucc') || t.includes('puc certificate')) return 'PUCC';
+  return null;
+}
+
+function extractDatesFromText(text, docType = '', fileName = '') {
+  if (!text) return [];
+  const dates = [];
+  const addedSet = new Set();
+
+  function addDate(day, month, year, raw, matchIndex) {
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      if (year >= 0 && year < 100) year += 2000;
+      if (year >= 2000 && year <= 2045) {
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+        if (!addedSet.has(dateStr)) {
+          addedSet.add(dateStr);
+
+          // Examine context (60 chars before and after) to guess the field
+          const contextStart = Math.max(0, matchIndex - 60);
+          const contextEnd = Math.min(text.length, matchIndex + 60);
+          const contextSnippet = text.substring(contextStart, contextEnd);
+          const suggestedField = guessFieldFromContext(contextSnippet, docType, fileName);
+
+          dates.push({ dateStr, dateLabel, raw: raw.trim(), suggestedField });
+        }
+      }
+    }
   }
 
-  const vehicle = await db.getVehicle(currentDocManagerVehicleId);
-  if (!vehicle || !vehicle.files || vehicle.files.length === 0) {
-    alert('No documents to scan. Please upload files first.');
-    return;
+  function guessFieldFromContext(snippet, dType, fName) {
+    const s = (snippet || '').toLowerCase();
+    if (s.includes('fitness') || s.includes('fc valid') || s.includes('fitness upto') || s.includes('fit upto') || s.includes('validity of fc')) return 'fitnessUpto';
+    if (s.includes('insurance') || s.includes('policy period') || s.includes('insured upto') || s.includes('period of insurance') || s.includes('policy upto')) return 'insuranceUpto';
+    if (s.includes('tax') || s.includes('mv tax') || s.includes('tax upto') || s.includes('tax paid upto') || s.includes('road tax')) return 'taxUpto';
+    if (s.includes('national permit') || s.includes('np valid') || s.includes('auth valid') || s.includes('authorization upto')) return 'nationalPermit';
+    if (s.includes('permit') || s.includes('carriage permit') || s.includes('permit upto') || s.includes('permit valid')) return 'permitUpto';
+    if (s.includes('pucc') || s.includes('pollution') || s.includes('emission') || s.includes('puc upto') || s.includes('puc valid')) return 'pucc';
+    if (s.includes('registration date') || s.includes('date of reg') || s.includes('regn date') || s.includes('reg. date')) return 'regDate';
+
+    const fallback = `${dType || ''} ${fName || ''}`.toLowerCase();
+    if (fallback.includes('fitness') || fallback.includes('fc')) return 'fitnessUpto';
+    if (fallback.includes('insurance') || fallback.includes('policy')) return 'insuranceUpto';
+    if (fallback.includes('tax')) return 'taxUpto';
+    if (fallback.includes('national permit') || fallback.includes('np')) return 'nationalPermit';
+    if (fallback.includes('permit')) return 'permitUpto';
+    if (fallback.includes('pollution') || fallback.includes('pucc') || fallback.includes('emission')) return 'pucc';
+    if (fallback.includes('rc') || fallback.includes('registration')) return 'regDate';
+    return '';
   }
 
-  const filesToScan = vehicle.files.filter(f => {
+  const monthNames = { 
+    'jan': 1, 'january': 1, 'feb': 2, 'february': 2, 'mar': 3, 'march': 3,
+    'apr': 4, 'april': 4, 'may': 5, 'jun': 6, 'june': 6, 'jul': 7, 'july': 7,
+    'aug': 8, 'august': 8, 'sep': 9, 'sept': 9, 'september': 9,
+    'oct': 10, 'october': 10, 'nov': 11, 'november': 11, 'dec': 12, 'december': 12 
+  };
+  
+  // Format 1: DD-MMM-YYYY or DD MMM YY (e.g. 14-Sep-2026, 14 Sep 26, 22/OCT/2025)
+  const textMonthRegex1 = /\b(\d{1,2})[\/\-\.\s]+([a-zA-Z]{3,9})[\/\-\.\s]+(\d{2,4})\b/g;
+  let match;
+  while ((match = textMonthRegex1.exec(text)) !== null) {
+    const day = parseInt(match[1]);
+    const month = monthNames[match[2].toLowerCase().substring(0, 3)];
+    const year = parseInt(match[3]);
+    if (month) addDate(day, month, year, match[0], match.index);
+  }
+
+  // Format 1b: MMM DD, YYYY or MMM DD YYYY (e.g. Sep 14, 2026)
+  const textMonthRegex2 = /\b([a-zA-Z]{3,9})[\s\.\-]+(\d{1,2})(?:st|nd|rd|th)?,?[\s\.\-]+(\d{2,4})\b/g;
+  while ((match = textMonthRegex2.exec(text)) !== null) {
+    const month = monthNames[match[1].toLowerCase().substring(0, 3)];
+    const day = parseInt(match[2]);
+    const year = parseInt(match[3]);
+    if (month) addDate(day, month, year, match[0], match.index);
+  }
+
+  // Format 2: Numeric DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD
+  const numDateRegex = /\b(\d{1,4})[\/\-\.\\|\s]+(\d{1,2})[\/\-\.\\|\s]+(\d{2,4})\b/g;
+  while ((match = numDateRegex.exec(text)) !== null) {
+    let day = parseInt(match[1]);
+    let month = parseInt(match[2]);
+    let year = parseInt(match[3]);
+    if (match[1].length === 4) {
+      year = parseInt(match[1]);
+      month = parseInt(match[2]);
+      day = parseInt(match[3]);
+    }
+    addDate(day, month, year, match[0], match.index);
+  }
+
+  return dates;
+}
+
+// Scans a single file (PDF or Image) and returns extracted text, dates, document type, and vehicle number
+async function scanSingleDocument(file, onProgress) {
+  const fileSrc = file.url || file.data;
+  if (!fileSrc) return { text: '', dates: [], docType: null, vehicleNo: null };
+
+  const isPdf = isPdfFile(file, fileSrc);
+  let extractedText = '';
+
+  if (isPdf) {
+    try {
+      if (onProgress) onProgress(0.15, `Opening PDF (${file.name || 'Document'})...`);
+      const pdf = await loadPdfDocument(fileSrc);
+      const numPages = pdf.numPages;
+
+      // Step 1: Fast direct digital text extraction (50ms)
+      if (onProgress) onProgress(0.3, `Extracting digital text from ${numPages} page(s)...`);
+      let digitalText = '';
+      for (let p = 1; p <= numPages; p++) {
+        const page = await pdf.getPage(p);
+        const textContent = await page.getTextContent();
+        const pageStr = textContent.items.map(item => item.str).join(' ');
+        digitalText += `\n${pageStr}\n`;
+      }
+
+      if (digitalText.replace(/\s+/g, '').length >= 30) {
+        console.log(`⚡ Instant Digital PDF text extracted from ${file.name} (${digitalText.length} chars)`);
+        extractedText = digitalText;
+      } else {
+        // Step 2: Scanned image PDF fallback: Render pages to canvas and run Tesseract OCR
+        console.log(`🖼️ Scanned image PDF detected for ${file.name}. Rendering pages for OCR...`);
+        for (let p = 1; p <= numPages; p++) {
+          if (onProgress) onProgress(0.3 + (p / numPages) * 0.65, `AI OCR reading page ${p} of ${numPages}...`);
+          const page = await pdf.getPage(p);
+          const viewport = page.getViewport({ scale: 1.5 });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext('2d');
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          const pageImg = canvas.toDataURL('image/jpeg', 0.85);
+
+          if (typeof Tesseract !== 'undefined') {
+            const result = await Tesseract.recognize(pageImg, 'eng');
+            extractedText += `\n${result.data.text}\n`;
+          }
+        }
+      }
+    } catch (pdfErr) {
+      console.warn('PDF scan notice for', file.name, pdfErr);
+    }
+  } else {
+    // Normal Image scanning (Camera photo, gallery image)
+    if (typeof Tesseract === 'undefined') {
+      throw new Error('AI OCR engine is loading. Please check internet connection.');
+    }
+    const compressed = await compressImageForOcr(fileSrc);
+    const result = await Tesseract.recognize(compressed, 'eng', {
+      logger: m => {
+        if (m.status === 'recognizing text' && onProgress) {
+          onProgress(0.2 + (m.progress * 0.75), `AI reading text: ${Math.round(m.progress * 100)}%`);
+        }
+      }
+    });
+    extractedText = result.data.text || '';
+  }
+
+  const docType = detectDocumentTypeFromText(extractedText);
+  const dates = extractDatesFromText(extractedText, docType, file.name || '');
+  const vehicleNo = detectVehicleNoFromText(extractedText);
+
+  return { text: extractedText, dates, docType, vehicleNo };
+}
+
+// Global state for OCR workflow
+let currentOcrScanMode = 'docManager'; // 'docManager' or 'form'
+let currentOcrVehicle = null;
+let currentDetectedVehicleNo = null;
+
+async function runAiScanWorkflow(filesToScan, isFormMode = false, targetVehicle = null) {
+  currentOcrScanMode = isFormMode ? 'form' : 'docManager';
+  currentOcrVehicle = targetVehicle;
+  currentDetectedVehicleNo = null;
+
+  const validFiles = (filesToScan || []).filter(f => {
     const src = f.url || f.data || '';
-    const type = f.type || '';
-    return type.startsWith('image/') || src.startsWith('data:image/') || src.startsWith('http') ||
-           type === 'application/pdf' || src.startsWith('data:application/pdf') || src.toLowerCase().includes('.pdf');
+    return isImageFile(f, src) || isPdfFile(f, src) || src.startsWith('http');
   });
 
-  if (filesToScan.length === 0) {
-    alert('No scannable files found. OCR works on photos/images and PDFs.');
+  if (validFiles.length === 0) {
+    alert('No scannable files found. AI scan supports photos and PDF documents.');
     return;
   }
 
-  // Show OCR modal
+  // Open OCR modal
   document.getElementById('ocrModal').classList.add('active');
   document.getElementById('ocrResults').style.display = 'none';
   document.getElementById('ocrStatus').style.display = 'block';
+
   const statusText = document.getElementById('ocrStatusText');
-  if (statusText) statusText.innerText = 'Initializing AI OCR Engine...';
   const progressBar = document.getElementById('ocrProgressBar');
+  if (statusText) statusText.innerText = 'Initializing AI Scanner...';
   if (progressBar) progressBar.style.width = '10%';
+
   let allExtractedDates = [];
-  const totalFiles = filesToScan.length;
+  const totalFiles = validFiles.length;
 
   try {
     for (let i = 0; i < totalFiles; i++) {
-      const file = filesToScan[i];
-      const fileSrc = file.url || file.data;
-      if (!fileSrc) continue;
+      const file = validFiles[i];
+      const startP = Math.round((i / totalFiles) * 100);
+      if (progressBar) progressBar.style.width = `${Math.max(10, startP)}%`;
+      if (statusText) statusText.innerText = `Scanning document ${i + 1} of ${totalFiles} (${file.name || 'File'})...`;
 
-      const progress = Math.round(((i + 0.1) / totalFiles) * 100);
-      if (progressBar) progressBar.style.width = progress + '%';
-      if (statusText) statusText.innerText = `Scanning document ${i + 1} of ${totalFiles} (${file.name || 'Photo'})...`;
+      const scanResult = await scanSingleDocument(file, (fraction, msg) => {
+        const itemP = Math.round(((i + fraction) / totalFiles) * 100);
+        if (progressBar) progressBar.style.width = `${itemP}%`;
+        if (statusText && msg) statusText.innerText = `Doc ${i + 1}/${totalFiles}: ${msg}`;
+      });
 
-      let fileExtractedText = '';
-
-      const isPdf = (file.type === 'application/pdf') || fileSrc.startsWith('data:application/pdf') || fileSrc.toLowerCase().includes('.pdf');
-
-      if (isPdf) {
-        try {
-          const pdfImages = await convertPdfToImages(fileSrc);
-          for (let p = 0; p < pdfImages.length; p++) {
-            const result = await Tesseract.recognize(pdfImages[p], 'eng', {
-              logger: m => {
-                if (m.status === 'recognizing text' && progressBar) {
-                  const innerP = Math.round(((i + ((m.progress + p) / pdfImages.length)) / totalFiles) * 100);
-                  progressBar.style.width = innerP + '%';
-                }
-              }
-            });
-            fileExtractedText += `\n${result.data.text}\n`;
-          }
-        } catch (pdfErr) {
-          console.warn('PDF OCR processing notice:', pdfErr);
-        }
-      } else {
-        // Image scanning: handles Cloudinary URLs, base64 data, etc.
-        const imageToScan = await compressImageForOcr(fileSrc);
-        const result = await Tesseract.recognize(imageToScan, 'eng', {
-          logger: m => {
-            if (m.status === 'recognizing text' && progressBar) {
-              const p = Math.round(((i + m.progress) / totalFiles) * 100);
-              progressBar.style.width = p + '%';
-            }
-          }
-        });
-        fileExtractedText += `\n${result.data.text}\n`;
+      if (!currentDetectedVehicleNo && scanResult.vehicleNo) {
+        currentDetectedVehicleNo = scanResult.vehicleNo;
       }
 
-      console.log(`📄 OCR Extracted Text for ${file.name}:`, fileExtractedText);
-
-      const fileDates = extractDatesFromText(fileExtractedText);
-      const detectedType = detectDocumentTypeFromText(fileExtractedText);
-
-      fileDates.forEach(d => {
-        let displayName = file.name || `Document ${i+1}`;
-        if (detectedType) {
-          displayName = `${detectedType} (Auto-detected)`;
+      scanResult.dates.forEach(d => {
+        let displayName = file.name || `Document ${i + 1}`;
+        if (scanResult.docType) {
+          displayName = `${scanResult.docType} (${displayName})`;
         } else if (file.category && file.category !== 'General') {
           displayName = `${file.category} (${displayName})`;
         }
@@ -2160,150 +2549,157 @@ async function ocrScanAllDocs() {
     }
 
     if (progressBar) progressBar.style.width = '100%';
-    showOcrResults(allExtractedDates, vehicle);
-  } catch (error) {
-    console.error('OCR Error:', error);
+    showOcrResults(allExtractedDates, isFormMode, targetVehicle, currentDetectedVehicleNo);
+  } catch (err) {
+    console.error('AI Scan Error:', err);
     document.getElementById('ocrStatus').innerHTML = `
-      <p style="color: var(--danger); font-weight: 700;">❌ OCR Scanning Failed</p>
-      <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">Error: ${error.message}</p>
+      <p style="color: var(--danger); font-weight: 700; font-size: 1rem;">❌ Scan Notice</p>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${err.message}</p>
+      <button class="secondary-btn" style="margin-top: 1rem;" onclick="document.getElementById('ocrModal').classList.remove('active')">Close</button>
     `;
   }
 }
 
-function detectDocumentTypeFromText(text) {
-  const t = text.toLowerCase();
-  if (t.includes('certificate of registration') || (t.includes('owner name') && t.includes('chassis'))) return 'RC Book';
-  if (t.includes('certificate of fitness') || t.includes('fitness certificate')) return 'Fitness Certificate';
-  if (t.includes('insurance') || t.includes('policy schedule') || t.includes('certificate of insurance')) return 'Insurance Policy';
-  if (t.includes('tax receipt') || t.includes('motor vehicle tax')) return 'Tax Receipt';
-  if (t.includes('national permit') || t.includes('authorization') || t.includes('goods carriage permit')) return 'Permit';
-  if (t.includes('pollution') || t.includes('emission') || t.includes('pucc')) return 'PUCC';
-  return null;
+// AI Scan Trigger: Document Manager (existing vehicle)
+async function ocrScanAllDocs() {
+  const vehicle = await db.getVehicle(currentDocManagerVehicleId);
+  if (!vehicle || !vehicle.files || vehicle.files.length === 0) {
+    alert('No documents to scan. Please upload photos or PDF files first.');
+    return;
+  }
+  await runAiScanWorkflow(vehicle.files, false, vehicle);
 }
 
-function extractDatesFromText(text) {
-  if (!text) return [];
-  const dates = [];
-  const addedSet = new Set();
-
-  function addDate(day, month, year, raw) {
-    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
-      if (year >= 0 && year < 100) year += 2000;
-      if (year >= 2000 && year <= 2045) {
-        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T00:00`;
-        const dateLabel = `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
-        if (!addedSet.has(dateStr)) {
-          addedSet.add(dateStr);
-          dates.push({ dateStr, dateLabel, raw: raw.trim() });
-        }
-      }
-    }
+// AI Scan Trigger: Vehicle Add/Edit Form (attached files before saving)
+async function ocrScanFormAttachedFiles() {
+  if (!tempAttachedFiles || tempAttachedFiles.length === 0) {
+    alert('Please attach photos or PDF documents first.');
+    return;
   }
-
-  const monthNames = { 
-    'jan': 1, 'january': 1,
-    'feb': 2, 'february': 2,
-    'mar': 3, 'march': 3,
-    'apr': 4, 'april': 4,
-    'may': 5,
-    'jun': 6, 'june': 6,
-    'jul': 7, 'july': 7,
-    'aug': 8, 'august': 8,
-    'sep': 9, 'sept': 9, 'september': 9,
-    'oct': 10, 'october': 10,
-    'nov': 11, 'november': 11,
-    'dec': 12, 'december': 12 
-  };
-  
-  // 1. Format: DD-MMM-YYYY or DD MMM YY (e.g. 14-Sep-2026, 14 Sep 26, 22/OCT/2025)
-  const textMonthRegex1 = /\b(\d{1,2})[\/\-\.\s]+([a-zA-Z]{3,9})[\/\-\.\s]+(\d{2,4})\b/g;
-  let match;
-  while ((match = textMonthRegex1.exec(text)) !== null) {
-    const day = parseInt(match[1]);
-    const month = monthNames[match[2].toLowerCase().substring(0, 3)];
-    const year = parseInt(match[3]);
-    if (month) addDate(day, month, year, match[0]);
-  }
-
-  // 1b. Format: MMM DD, YYYY or MMM DD YYYY (e.g. Sep 14, 2026)
-  const textMonthRegex2 = /\b([a-zA-Z]{3,9})[\s\.\-]+(\d{1,2})(?:st|nd|rd|th)?,?[\s\.\-]+(\d{2,4})\b/g;
-  while ((match = textMonthRegex2.exec(text)) !== null) {
-    const month = monthNames[match[1].toLowerCase().substring(0, 3)];
-    const day = parseInt(match[2]);
-    const year = parseInt(match[3]);
-    if (month) addDate(day, month, year, match[0]);
-  }
-
-  // 2. Format: Numeric DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, DD/MM/YY (supports /, -, ., |, \, spaces)
-  const numDateRegex = /\b(\d{1,4})[\/\-\.\\|\s]+(\d{1,2})[\/\-\.\\|\s]+(\d{2,4})\b/g;
-  while ((match = numDateRegex.exec(text)) !== null) {
-    let day = parseInt(match[1]);
-    let month = parseInt(match[2]);
-    let year = parseInt(match[3]);
-    if (match[1].length === 4) {
-      year = parseInt(match[1]);
-      month = parseInt(match[2]);
-      day = parseInt(match[3]);
-    }
-    addDate(day, month, year, match[0]);
-  }
-
-  return dates;
+  await runAiScanWorkflow(tempAttachedFiles, true, null);
 }
 
-function showOcrResults(extractedDates, vehicle) {
+function showOcrResults(extractedDates, isFormMode, vehicle, detectedVehicleNo) {
   document.getElementById('ocrStatus').style.display = 'none';
   const resultsDiv = document.getElementById('ocrResults');
   resultsDiv.style.display = 'block';
 
-  let html = '<h4 style="font-weight: 700; margin-bottom: 0.75rem;">✅ Scan Complete!</h4>';
+  let html = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.85rem;">
+      <h4 style="font-weight: 800; font-size: 1.05rem; margin: 0; color: #fff;">✅ AI Scan Complete!</h4>
+      <span style="font-size: 0.75rem; background: rgba(59, 130, 246, 0.15); color: var(--primary); padding: 2px 8px; border-radius: 12px; font-weight: 700;">${extractedDates.length} Date(s) Found</span>
+    </div>
+  `;
+
+  if (detectedVehicleNo) {
+    html += `
+      <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 0.65rem 0.85rem; margin-bottom: 0.85rem; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <span style="font-size: 0.72rem; color: var(--text-muted); display: block; font-weight: 600;">DETECTED REGISTRATION NO:</span>
+          <span style="font-size: 1rem; font-weight: 800; color: var(--primary); letter-spacing: 0.5px;">${detectedVehicleNo}</span>
+        </div>
+        ${isFormMode ? `<label style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; font-weight: 600; cursor: pointer; color: #fff;"><input type="checkbox" id="ocrVehicleNoCheckbox" checked> Auto-fill No.</label>` : ''}
+      </div>
+    `;
+  }
 
   if (extractedDates.length > 0) {
-    html += '<p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">Dates found in documents. Select which field to auto-fill:</p>';
+    html += `
+      <p style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+        Review the detected dates below. The AI has pre-selected matching fields based on document text:
+      </p>
+      <div style="max-height: 52vh; overflow-y: auto; padding-right: 4px; display: flex; flex-direction: column; gap: 0.6rem;">
+    `;
 
     extractedDates.forEach((d, idx) => {
-      // Suggest the field based on the file name/category if possible
-      let suggestedField = "";
-      const sourceLower = d.sourceName.toLowerCase();
-      if (sourceLower.includes("registration") || sourceLower.includes("rc")) suggestedField = "regDate";
-      else if (sourceLower.includes("fitness")) suggestedField = "fitnessUpto";
-      else if (sourceLower.includes("insurance") || sourceLower.includes("policy")) suggestedField = "insuranceUpto";
-      else if (sourceLower.includes("tax")) suggestedField = "taxUpto";
-      else if (sourceLower.includes("national permit") || sourceLower.includes("np")) suggestedField = "nationalPermit";
-      else if (sourceLower.includes("permit")) suggestedField = "permitUpto";
-      else if (sourceLower.includes("pucc") || sourceLower.includes("pollution") || sourceLower.includes("emission")) suggestedField = "pucc";
-
+      const suggested = d.suggestedField || '';
       html += `
-        <div class="ocr-date-found" style="display: flex; justify-content: space-between; align-items: center; padding: 0.8rem; flex-wrap: wrap;">
-          <div style="width: 100%; margin-bottom: 0.4rem; font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">
-            📄 Found in: ${d.sourceName}
+        <div class="ocr-date-found" style="display: flex; flex-direction: column; gap: 0.4rem; padding: 0.65rem 0.8rem; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px;">
+          <div style="font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(d.sourceName)}">
+            📄 ${escapeHtml(d.sourceName)}
           </div>
-          <div class="ocr-value" style="margin:0;">📅 ${d.dateLabel}</div>
-          <select class="ocr-field-select" data-date="${d.dateStr}" style="padding: 0.4rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-main);">
-            <option value="">-- Ignore --</option>
-            <option value="regDate" ${suggestedField === 'regDate' ? 'selected' : ''}>Registration</option>
-            <option value="fitnessUpto" ${suggestedField === 'fitnessUpto' ? 'selected' : ''}>Fitness</option>
-            <option value="insuranceUpto" ${suggestedField === 'insuranceUpto' ? 'selected' : ''}>Insurance</option>
-            <option value="taxUpto" ${suggestedField === 'taxUpto' ? 'selected' : ''}>Tax</option>
-            <option value="permitUpto" ${suggestedField === 'permitUpto' ? 'selected' : ''}>Permit</option>
-            <option value="nationalPermit" ${suggestedField === 'nationalPermit' ? 'selected' : ''}>National Permit</option>
-            <option value="pucc" ${suggestedField === 'pucc' ? 'selected' : ''}>PUCC</option>
-          </select>
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+            <div style="font-size: 0.95rem; font-weight: 800; color: var(--success); display: flex; align-items: center; gap: 0.35rem;">
+              <span>📅</span> ${d.dateLabel}
+            </div>
+            <select class="ocr-field-select" data-date="${d.dateStr}" style="padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-main); color: var(--text-main); font-size: 0.82rem; font-weight: 600; flex-shrink: 0; min-width: 140px;">
+              <option value="">-- Ignore --</option>
+              <option value="fitnessUpto" ${suggested === 'fitnessUpto' ? 'selected' : ''}>Fitness Upto</option>
+              <option value="insuranceUpto" ${suggested === 'insuranceUpto' ? 'selected' : ''}>Insurance Upto</option>
+              <option value="taxUpto" ${suggested === 'taxUpto' ? 'selected' : ''}>Tax Upto</option>
+              <option value="permitUpto" ${suggested === 'permitUpto' ? 'selected' : ''}>Permit Upto</option>
+              <option value="nationalPermit" ${suggested === 'nationalPermit' ? 'selected' : ''}>National Permit</option>
+              <option value="pucc" ${suggested === 'pucc' ? 'selected' : ''}>PUCC Upto</option>
+              <option value="regDate" ${suggested === 'regDate' ? 'selected' : ''}>Registration Date</option>
+            </select>
+          </div>
         </div>
       `;
     });
 
+    html += `</div>`;
+
+    if (isFormMode) {
+      html += `
+        <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+          <button type="button" class="secondary-btn" onclick="document.getElementById('ocrModal').classList.remove('active')" style="flex: 1; justify-content: center;">Cancel</button>
+          <button type="button" class="primary-btn" onclick="applyOcrDatesToForm()" style="flex: 2; justify-content: center; font-weight: 800;">⚡ Apply to Vehicle Form</button>
+        </div>
+      `;
+    } else {
+      html += `
+        <div style="margin-top: 1rem; display: flex; gap: 0.5rem;">
+          <button type="button" class="secondary-btn" onclick="document.getElementById('ocrModal').classList.remove('active')" style="flex: 1; justify-content: center;">Cancel</button>
+          <button type="button" class="primary-btn" onclick="saveAllOcrDates()" style="flex: 2; justify-content: center; font-weight: 800;">💾 Save Dates to Vehicle</button>
+        </div>
+      `;
+    }
+  } else {
     html += `
-      <div style="margin-top: 1rem; text-align: center;">
-        <button class="primary-btn" onclick="saveAllOcrDates()" style="width: 100%; padding: 0.75rem;">💾 Save All Selected Dates</button>
+      <div style="text-align: center; padding: 1.5rem 0.5rem;">
+        <p style="color: var(--warning); font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem;">⚠️ No dates found</p>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+          Ensure the uploaded document contains clear text or valid date stamps (e.g. DD/MM/YYYY).
+        </p>
+        <button type="button" class="secondary-btn" onclick="document.getElementById('ocrModal').classList.remove('active')" style="margin: 0 auto;">Close</button>
       </div>
     `;
-  } else {
-    html += '<p style="color: var(--warning); font-weight: 600;">⚠️ No dates found in the scanned documents.</p>';
-    html += '<p style="font-size: 0.85rem; color: var(--text-muted);">Try uploading clearer images with visible dates.</p>';
   }
 
   resultsDiv.innerHTML = html;
+}
+
+function applyOcrDatesToForm() {
+  const selects = document.querySelectorAll('.ocr-field-select');
+  let count = 0;
+
+  selects.forEach(sel => {
+    const fieldKey = sel.value;
+    const dateStr = sel.getAttribute('data-date');
+    if (fieldKey && dateStr) {
+      const input = document.getElementById(fieldKey);
+      if (input) {
+        input.value = dateStr.split('T')[0];
+        count++;
+      }
+    }
+  });
+
+  const vehCheckbox = document.getElementById('ocrVehicleNoCheckbox');
+  if (vehCheckbox && vehCheckbox.checked && currentDetectedVehicleNo) {
+    const vehInput = document.getElementById('vehicleNo');
+    if (vehInput && (!vehInput.value || vehInput.value.trim() === '')) {
+      vehInput.value = currentDetectedVehicleNo;
+      count++;
+    }
+  }
+
+  document.getElementById('ocrModal').classList.remove('active');
+  if (count > 0) {
+    alert(`✅ Successfully auto-filled ${count} field(s) into the form!`);
+  } else {
+    alert('No fields were selected to fill.');
+  }
 }
 
 async function saveAllOcrDates() {
@@ -2316,18 +2712,19 @@ async function saveAllOcrDates() {
   selects.forEach(select => {
     const fieldKey = select.value;
     const dateStr = select.getAttribute('data-date');
-    if (fieldKey) {
-      vehicle[fieldKey] = dateStr;
+    if (fieldKey && dateStr) {
+      vehicle[fieldKey] = formatExpiryDateWithDefaultTime(dateStr);
       updated = true;
     }
   });
 
   if (updated) {
     await db.saveVehicle(vehicle);
+    await pushCurrentVehiclesToCloud();
     document.getElementById('ocrModal').classList.remove('active');
     closeDocManagerModal();
     await loadVehicles();
-    alert('✅ All selected dates have been saved successfully!');
+    alert('✅ All selected dates have been saved and synced to cloud!');
   } else {
     alert('⚠️ Please select at least one field to save.');
   }

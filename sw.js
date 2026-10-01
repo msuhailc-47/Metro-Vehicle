@@ -1,11 +1,13 @@
-// Service Worker v23 - Expiring Soon Filter Fix
-const CACHE_NAME = 'vehicle-ex-v23';
+// Service Worker v24 - PDF View & AI Scan Support
+const CACHE_NAME = 'vehicle-ex-v24';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './xlsx.full.min.js',
+  './pdf.min.js',
+  './pdf.worker.min.js',
   './manifest.json'
 ];
 
